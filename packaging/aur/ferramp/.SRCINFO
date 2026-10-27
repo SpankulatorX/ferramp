@@ -1,0 +1,16 @@
+pkgbase = ferramp
+	pkgdesc = Classic skinnable audio player (Winamp 2 look and feel, written in Rust)
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/SpankulatorX/ferramp
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	license = Apache-2.0
+	makedepends = cargo
+	depends = alsa-lib
+	depends = hicolor-icon-theme
+	source = ferramp-0.1.0.tar.gz::https://github.com/SpankulatorX/ferramp/archive/refs/tags/v0.1.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = ferramp

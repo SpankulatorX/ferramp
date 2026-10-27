@@ -9,8 +9,17 @@ any classic `.wsz` skin and it looks the way it always did.
 | --- | --- |
 | Windows 10/11 (x64) | `ferramp-*-windows-x86_64.zip` |
 | macOS 11 or later (Apple silicon and Intel) | `ferramp-*-macos-universal.dmg` |
-| Linux x86_64 | `ferramp-*-linux-x86_64.tar.gz` |
-| Linux ARM64 | `ferramp-*-linux-aarch64.tar.gz` |
+| Linux x86_64 | `ferramp-*-linux-x86_64.tar.gz`, `ferramp-*-linux-amd64.deb`, `ferramp-*-linux-x86_64.rpm`, `Ferramp-*-linux-x86_64.AppImage` |
+| Linux ARM64 | `ferramp-*-linux-aarch64.tar.gz`, `ferramp-*-linux-arm64.deb`, `ferramp-*-linux-aarch64.rpm`, `Ferramp-*-linux-aarch64.AppImage` |
+
+One-liner (picks the right Linux package for you):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/SpankulatorX/ferramp/main/install.sh | sh
+```
+
+Arch Linux is also on the AUR as `ferramp` (source) and `ferramp-bin`
+(prebuilt): `yay -S ferramp-bin`. See `packaging/aur/`.
 
 **Windows:** unzip and run `ferramp.exe`. The binary is not code-signed,
 so SmartScreen may ask you to confirm (More info, Run anyway).
@@ -20,8 +29,10 @@ is not notarized: the first time, right-click it and choose Open, or
 allow it under System Settings, Privacy & Security. From a terminal,
 `xattr -dr com.apple.quarantine /Applications/Ferramp.app` does the same.
 
-**Linux:** unpack and run `./ferramp`, or run `./install.sh` to install
-it with a menu entry into `~/.local`. It needs ALSA (or PipeWire/Pulse
+**Linux:** install the `.deb` (`sudo apt install ./ferramp-*.deb`) or
+`.rpm` (`sudo dnf install ./ferramp-*.rpm`), run the `.AppImage`, or
+unpack the `.tar.gz` and run `./ferramp` — `./install.sh` installs it
+with a menu entry into `~/.local`. It needs ALSA (or PipeWire/Pulse
 with the ALSA plug-in), an X11 or XWayland display and glibc 2.35 or
 newer (Ubuntu 22.04, Debian 12, Fedora 36 or later).
 

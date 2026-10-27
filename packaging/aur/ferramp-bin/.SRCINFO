@@ -1,0 +1,19 @@
+pkgbase = ferramp-bin
+	pkgdesc = Classic skinnable audio player (prebuilt binary)
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/SpankulatorX/ferramp
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	license = Apache-2.0
+	depends = alsa-lib
+	depends = hicolor-icon-theme
+	provides = ferramp
+	conflicts = ferramp
+	source_x86_64 = ferramp-bin-0.1.0-x86_64.tar.gz::https://github.com/SpankulatorX/ferramp/releases/download/v0.1.0/ferramp-v0.1.0-linux-x86_64.tar.gz
+	sha256sums_x86_64 = SKIP
+	source_aarch64 = ferramp-bin-0.1.0-aarch64.tar.gz::https://github.com/SpankulatorX/ferramp/releases/download/v0.1.0/ferramp-v0.1.0-linux-aarch64.tar.gz
+	sha256sums_aarch64 = SKIP
+
+pkgname = ferramp-bin

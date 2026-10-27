@@ -1,0 +1,29 @@
+# Maintainer: Ferramp contributors <https://github.com/SpankulatorX/ferramp>
+pkgname=ferramp-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Classic skinnable audio player (prebuilt binary)'
+arch=('x86_64' 'aarch64')
+url='https://github.com/SpankulatorX/ferramp'
+license=('MIT' 'Apache-2.0')
+depends=('alsa-lib' 'hicolor-icon-theme')
+provides=('ferramp')
+conflicts=('ferramp')
+# Release tarballs are named ferramp-<tag>-linux-<arch>.tar.gz,
+# e.g. ferramp-v0.1.0-linux-x86_64.tar.gz for tag v0.1.0.
+source_x86_64=("$pkgname-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/ferramp-v$pkgver-linux-x86_64.tar.gz")
+source_aarch64=("$pkgname-$pkgver-aarch64.tar.gz::$url/releases/download/v$pkgver/ferramp-v$pkgver-linux-aarch64.tar.gz")
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+  # The tarball contains a top-level ferramp-<tag>-linux-<arch>/ directory
+  # with the binary, install.sh, ferramp.desktop and icons/.
+  install -Dm755 "$srcdir"/ferramp-v$pkgver-linux-*/ferramp "$pkgdir/usr/bin/ferramp"
+  install -Dm644 "$srcdir"/ferramp-v$pkgver-linux-*/ferramp.desktop \
+    "$pkgdir/usr/share/applications/ferramp.desktop"
+  for size in 16 32 48 64 128 256; do
+    install -Dm644 "$srcdir"/ferramp-v$pkgver-linux-*/icons/ferramp-$size.png \
+      "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/ferramp.png"
+  done
+}

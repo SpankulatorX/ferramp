@@ -25,9 +25,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libxkbcommon-dev
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libxkbcommon-dev rpm
       - run: cargo build --release --locked
       - run: cargo test --release --locked
+      - name: Install appimagetool
+        run: |
+          case "${{ matrix.arch }}" in
+            x86_64) ai_arch=x86_64 ;;
+            aarch64) ai_arch=aarch64 ;;
+          esac
+          curl -fsSL -o /tmp/appimagetool \
+            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${ai_arch}.AppImage"
+          chmod +x /tmp/appimagetool
+          # appimagetool is itself an AppImage; extract it on runners without FUSE.
+          (cd /tmp && ./appimagetool --appimage-extract >/dev/null)
+          echo "/tmp/squashfs-root" >> "$GITHUB_PATH"
       - name: Package
         run: |
           name=ferramp-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}
@@ -36,10 +48,18 @@ jobs:
              README.md LICENSE-MIT LICENSE-APACHE NOTICE "dist/$name/"
           cp assets/icons/ferramp-*.png "dist/$name/icons/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
+          bash packaging/linux/build-deb.sh target/release/ferramp dist
+          bash packaging/linux/build-rpm.sh target/release/ferramp dist
+          bash packaging/linux/build-appimage.sh target/release/ferramp dist
+          ls -lh dist
       - uses: actions/upload-artifact@v4
         with:
           name: linux-${{ matrix.arch }}
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
 
   windows:
     runs-on: windows-latest
