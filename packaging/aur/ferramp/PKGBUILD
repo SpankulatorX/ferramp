@@ -1,17 +1,24 @@
 # Maintainer: Ferramp contributors <https://github.com/SpankulatorX/ferramp>
 pkgname=ferramp
-pkgver=0.1.1
+pkgver=0.2.0
 pkgrel=1
 pkgdesc='Classic skinnable audio player (Winamp 2 look and feel, written in Rust)'
 arch=('x86_64' 'aarch64')
 url='https://github.com/SpankulatorX/ferramp'
 license=('MIT OR Apache-2.0')
 depends=('alsa-lib' 'gcc-libs' 'glibc' 'hicolor-icon-theme')
+optdepends=('wine: classic Winamp plug-ins')
 makedepends=('cargo')
 # ring (TLS for internet radio) fails to link with makepkg's default LTO.
 options=('!lto')
-source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('5cc64e57db52d14ad58976cec5fc34fa077a0833a53e6918e2629648d7fe9827')
+# The plug-in host is a Windows program (run under Wine) and needs a Windows
+# toolchain to build, so it comes prebuilt from the same release.
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz"
+        "ferramp-plughost-x86-$pkgver.exe::$url/releases/download/v$pkgver/ferramp-plughost-x86.exe"
+        "ferramp-plughost-x64-$pkgver.exe::$url/releases/download/v$pkgver/ferramp-plughost-x64.exe")
+sha256sums=('652a9da54c6809302c4ba8fb47dbe7408f65f8cfcbd23799c791481da3438bd8'
+            'f0512bc408149d412a05c56e354b1815d2d017cdf60b3a1c302c78472cee0ba7'
+            '81c22be7387591b04a0af7e5b39cb7de66e2a3aa1630656735ccdd1b1617e588')
 
 prepare() {
   cd "$pkgname-$pkgver"
@@ -35,6 +42,9 @@ check() {
 package() {
   cd "$pkgname-$pkgver"
   install -Dm755 "target/release/ferramp" "$pkgdir/usr/bin/ferramp"
+  for a in x86 x64; do
+    install -Dm644 "$srcdir/ferramp-plughost-$a-$pkgver.exe" "$pkgdir/usr/lib/ferramp/ferramp-plughost-$a.exe"
+  done
   install -Dm644 "assets/ferramp.desktop" "$pkgdir/usr/share/applications/ferramp.desktop"
   for size in 16 32 48 64 128 256; do
     install -Dm644 "assets/icons/ferramp-$size.png" \

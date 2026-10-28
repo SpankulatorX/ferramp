@@ -1,12 +1,13 @@
 # Maintainer: Ferramp contributors <https://github.com/SpankulatorX/ferramp>
 pkgname=ferramp-bin
-pkgver=0.1.1
+pkgver=0.2.0
 pkgrel=1
 pkgdesc='Classic skinnable audio player (prebuilt binary)'
 arch=('x86_64' 'aarch64')
 url='https://github.com/SpankulatorX/ferramp'
 license=('MIT OR Apache-2.0')
 depends=('alsa-lib' 'gcc-libs' 'glibc' 'hicolor-icon-theme')
+optdepends=('wine: classic Winamp plug-ins')
 provides=('ferramp')
 conflicts=('ferramp')
 options=('!strip' '!debug')
@@ -14,14 +15,17 @@ options=('!strip' '!debug')
 # e.g. ferramp-v0.1.0-linux-x86_64.tar.gz for tag v0.1.0.
 source_x86_64=("$pkgname-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/ferramp-v$pkgver-linux-x86_64.tar.gz")
 source_aarch64=("$pkgname-$pkgver-aarch64.tar.gz::$url/releases/download/v$pkgver/ferramp-v$pkgver-linux-aarch64.tar.gz")
-sha256sums_x86_64=('8637251bc8c1d4d486ad90d1a417e4a5fdc679b603b57027820f9cbc5b7a77b3')
-sha256sums_aarch64=('6c0db087738d45454e32bf79d53f692567304825dca2c2398c5b029151d0bef0')
+sha256sums_x86_64=('a3c5d383873307fa29ebdcf2c3d173ded5504222251ede722a137e43be8952f7')
+sha256sums_aarch64=('55796f239918524e884fa04362b6c2cf3c89df8e705a4b7a6e561a14d16fd721')
 
 package() {
   # The tarball contains a top-level ferramp-v<version>-linux-<arch>/ directory
-  # with the binary, install.sh, ferramp.desktop, icons/ and the licence files.
+  # with the binary, the plug-in host, install.sh, ferramp.desktop, icons/ and
+  # the licence files.
   cd "ferramp-v$pkgver-linux-$CARCH"
   install -Dm755 ferramp "$pkgdir/usr/bin/ferramp"
+  # The plug-in host is a Windows program, run under Wine.
+  install -Dm644 -t "$pkgdir/usr/lib/ferramp" ferramp-plughost-x86.exe ferramp-plughost-x64.exe
   install -Dm644 ferramp.desktop "$pkgdir/usr/share/applications/ferramp.desktop"
   for size in 16 32 48 64 128 256; do
     install -Dm644 "icons/ferramp-$size.png" \

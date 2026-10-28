@@ -1,6 +1,6 @@
 pkgbase = ferramp
 	pkgdesc = Classic skinnable audio player (Winamp 2 look and feel, written in Rust)
-	pkgver = 0.1.1
+	pkgver = 0.2.0
 	pkgrel = 1
 	url = https://github.com/SpankulatorX/ferramp
 	arch = x86_64
@@ -11,8 +11,13 @@ pkgbase = ferramp
 	depends = gcc-libs
 	depends = glibc
 	depends = hicolor-icon-theme
+	optdepends = wine: classic Winamp plug-ins
 	options = !lto
-	source = ferramp-0.1.1.tar.gz::https://github.com/SpankulatorX/ferramp/archive/refs/tags/v0.1.1.tar.gz
-	sha256sums = 5cc64e57db52d14ad58976cec5fc34fa077a0833a53e6918e2629648d7fe9827
+	source = ferramp-0.2.0.tar.gz::https://github.com/SpankulatorX/ferramp/archive/refs/tags/v0.2.0.tar.gz
+	source = ferramp-plughost-x86-0.2.0.exe::https://github.com/SpankulatorX/ferramp/releases/download/v0.2.0/ferramp-plughost-x86.exe
+	source = ferramp-plughost-x64-0.2.0.exe::https://github.com/SpankulatorX/ferramp/releases/download/v0.2.0/ferramp-plughost-x64.exe
+	sha256sums = 652a9da54c6809302c4ba8fb47dbe7408f65f8cfcbd23799c791481da3438bd8
+	sha256sums = f0512bc408149d412a05c56e354b1815d2d017cdf60b3a1c302c78472cee0ba7
+	sha256sums = 81c22be7387591b04a0af7e5b39cb7de66e2a3aa1630656735ccdd1b1617e588
 
 pkgname = ferramp
