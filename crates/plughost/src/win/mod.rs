@@ -87,6 +87,7 @@ pub fn main_hwnd() -> HWND {
 pub fn run() -> i32 {
     let (input, output) = unsafe { take_std_handles() };
     let _ = OUT.set(Mutex::new(output));
+    unsafe { install_crash_handler() };
     let Some(hwnd) = (unsafe { create_main_window() }) else {
         return 1;
     };
@@ -157,6 +158,56 @@ unsafe fn take_std_handles() -> (File, File) {
     }
 }
 
+/// A plugin that crashes must not leave a crash dialog keeping the host
+/// alive: report where it happened and exit, so Ferramp can restart the
+/// host without that plugin.
+unsafe fn install_crash_handler() {
+    use windows_sys::Win32::System::Diagnostics::Debug::{
+        EXCEPTION_POINTERS, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SetErrorMode,
+        SetUnhandledExceptionFilter,
+    };
+    unsafe extern "system" fn filter(info: *const EXCEPTION_POINTERS) -> i32 {
+        unsafe {
+            let rec = &*(*info).ExceptionRecord;
+            let addr = rec.ExceptionAddress as usize;
+            let module = module_at(addr);
+            event(FromHost::Log(format!(
+                "crash: exception {:#010x} at {addr:#x} in {module}",
+                rec.ExceptionCode as u32
+            )));
+        }
+        std::process::exit(3);
+    }
+    unsafe {
+        SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+        SetUnhandledExceptionFilter(Some(filter));
+    }
+}
+
+/// The file name of the module containing `addr`.
+unsafe fn module_at(addr: usize) -> String {
+    use windows_sys::Win32::System::LibraryLoader::{
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+        GetModuleFileNameW, GetModuleHandleExW,
+    };
+    unsafe {
+        let mut h = std::ptr::null_mut();
+        if GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            addr as *const u16,
+            &mut h,
+        ) == 0
+        {
+            return "unknown module".into();
+        }
+        let mut buf = [0u16; 520];
+        let n = GetModuleFileNameW(h, buf.as_mut_ptr(), buf.len() as u32) as usize;
+        let path = String::from_utf16_lossy(&buf[..n]);
+        let name = path.rsplit('\\').next().unwrap_or(&path).to_string();
+        format!("{name}+{:#x}", addr - h as usize)
+    }
+}
+
 unsafe fn create_main_window() -> Option<HWND> {
     unsafe {
         let hinst = GetModuleHandleW(std::ptr::null());
@@ -171,7 +222,7 @@ unsafe fn create_main_window() -> Option<HWND> {
         let h = CreateWindowExW(
             0,
             class.as_ptr(),
-            wide("Ferramp").as_ptr(),
+            wide("Winamp 5.66").as_ptr(),
             WS_OVERLAPPEDWINDOW,
             0,
             0,
@@ -287,8 +338,10 @@ fn handle(id: u32, msg: ToHost) {
             protocol: _,
             ini_dir,
             plugin_dirs,
+            skip,
+            inputs_only,
         } => {
-            registry::set_dirs(&ini_dir, &plugin_dirs);
+            registry::set_dirs(&ini_dir, &plugin_dirs, skip, inputs_only);
             reply(
                 id,
                 FromHost::HelloOk {

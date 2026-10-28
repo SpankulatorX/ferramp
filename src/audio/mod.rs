@@ -111,6 +111,8 @@ pub struct Shared {
     active: AtomicU64,
     /// Input and DSP plugins, once they are loaded.
     plugins: Mutex<Option<Arc<crate::plugins::Plugins>>>,
+    /// Plugins are being loaded; files only they can play wait for them.
+    plugins_loading: AtomicBool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -140,6 +142,7 @@ impl Shared {
             out_rate: AtomicU32::new(44100),
             active: AtomicU64::new(0),
             plugins: Mutex::new(None),
+            plugins_loading: AtomicBool::new(false),
         }
     }
 }
@@ -269,6 +272,56 @@ impl Engine {
     /// Lets the decoder use input and DSP plugins.
     pub fn set_plugins(&self, p: Option<Arc<crate::plugins::Plugins>>) {
         *self.shared.plugins.lock().unwrap() = p;
+        self.shared.plugins_loading.store(false, Ordering::SeqCst);
+    }
+
+    /// Plays through an output plugin, or the sound card again with `None`.
+    /// Stops playback; the caller restarts it.
+    pub fn set_output(
+        &mut self,
+        out: Option<(Arc<crate::plugins::Plugins>, crate::plugins::Plugin)>,
+    ) -> Result<(), String> {
+        self.stop();
+        // End the current output (device stream or output thread).
+        self.quit.store(true, Ordering::SeqCst);
+        self._stream = None;
+        *self.producer.lock().unwrap() = None;
+        self.quit = Arc::new(AtomicBool::new(false));
+        match out {
+            Some((sys, p)) => {
+                let rate = 44100;
+                sys.out_open(&p, rate, 2, 16)?;
+                self.shared.out_rate.store(rate, Ordering::Relaxed);
+                let (prod, cons) =
+                    rtrb::RingBuffer::<[f32; 2]>::new((rate as f64 * RING_SECONDS) as usize);
+                *self.producer.lock().unwrap() = Some(prod);
+                self.shared
+                    .consumed
+                    .store(self.pushed.load(Ordering::SeqCst), Ordering::SeqCst);
+                start_plugin_output(sys, rate, cons, self.shared.clone(), self.quit.clone());
+                self.device_error = None;
+                Ok(())
+            }
+            None => {
+                self.shared
+                    .consumed
+                    .store(self.pushed.load(Ordering::SeqCst), Ordering::SeqCst);
+                match self.open_device() {
+                    Ok(stream) => {
+                        self._stream = Some(stream);
+                        self.device_error = None;
+                    }
+                    Err(e) if e == "null output" => {}
+                    Err(e) => self.device_error = Some(e.clone()),
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Plugins are loading: a track only they can play waits for them.
+    pub fn set_plugins_loading(&self, loading: bool) {
+        self.shared.plugins_loading.store(loading, Ordering::SeqCst);
     }
 
     pub fn out_rate(&self) -> u32 {
@@ -556,6 +609,81 @@ where
             None,
         )
         .map_err(|e| e.to_string())
+}
+
+/// Plays through an output plugin instead of the sound card: frames go to
+/// the plugin as fast as it accepts them, and the position counts what it
+/// has actually played (written minus its buffer).
+fn start_plugin_output(
+    sys: Arc<crate::plugins::Plugins>,
+    rate: u32,
+    mut cons: rtrb::Consumer<[f32; 2]>,
+    shared: Arc<Shared>,
+    quit: Arc<AtomicBool>,
+) {
+    let _ = std::thread::Builder::new()
+        .name("plugin-output".into())
+        .spawn(move || {
+            let mut popped: u64 = shared.consumed.load(Ordering::Relaxed);
+            let mut paused = false;
+            let mut tap = Vec::with_capacity(4096);
+            let mut bytes = Vec::with_capacity(4096 * 4);
+            while !quit.load(Ordering::Relaxed) {
+                let want_pause = shared.paused.load(Ordering::Relaxed);
+                if want_pause != paused {
+                    paused = want_pause;
+                    sys.out_pause(paused);
+                }
+                // A seek or track change: drop stale audio here and in the plugin.
+                let discard_until = shared.discard_until.load(Ordering::Relaxed);
+                if popped < discard_until {
+                    while popped < discard_until && cons.pop().is_ok() {
+                        popped += 1;
+                    }
+                    sys.out_flush(0);
+                }
+                let Some((can, out_ms, written_ms)) = sys.out_status() else {
+                    std::thread::sleep(Duration::from_millis(50));
+                    continue;
+                };
+                // What the listener hears lags what was written by the plugin's buffer.
+                let lag = (written_ms.saturating_sub(out_ms) as u64) * rate as u64 / 1000;
+                shared
+                    .consumed
+                    .store(popped.saturating_sub(lag), Ordering::Relaxed);
+                let frames = ((can / 4) as usize).min(2048).min(cons.slots());
+                if paused || frames < 64 {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                let vol = f32::from_bits(shared.volume.load(Ordering::Relaxed));
+                let bal = f32::from_bits(shared.balance.load(Ordering::Relaxed));
+                let gl = vol * (1.0 - bal.max(0.0));
+                let gr = vol * (1.0 + bal.min(0.0));
+                bytes.clear();
+                tap.clear();
+                for _ in 0..frames {
+                    let Ok(s) = cons.pop() else { break };
+                    popped += 1;
+                    tap.push((s[0] + s[1]) * 0.5);
+                    for v in [s[0] * gl, s[1] * gr] {
+                        let i = (v.clamp(-1.0, 1.0) * 32767.0) as i16;
+                        bytes.extend_from_slice(&i.to_le_bytes());
+                    }
+                }
+                if let Ok(mut vis) = shared.vis.try_lock() {
+                    for &s in &tap {
+                        vis.pop_front();
+                        vis.push_back(s);
+                    }
+                }
+                if !sys.out_write(std::mem::take(&mut bytes)) {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            sys.out_close();
+        });
 }
 
 /// A silent output that consumes audio in real time (FERRAMP_NULL_AUDIO=1),
@@ -871,13 +999,49 @@ fn apply_dsp(sys: &crate::plugins::Plugins, rate: u32, frames: &mut Vec<[f32; 2]
     if let Some(out) = sys.dsp_process(rate, 2, samples) {
         frames.clear();
         frames.extend(
-            out.chunks_exact(2)
+            out.as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| [c[0] as f32 / 32768.0, c[1] as f32 / 32768.0]),
         );
     }
 }
 
+/// Waits (up to two minutes, interruptibly) for plugins that are still
+/// loading when the file is not a built-in format. Returns false if told to
+/// stop meanwhile.
+fn wait_for_plugins(ctx: &DecodeCtx) -> bool {
+    let Source::File(path) = &ctx.source else {
+        return true;
+    };
+    let native = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| crate::plugins::NATIVE_EXTENSIONS.contains(&e.to_lowercase().as_str()));
+    if native {
+        return true;
+    }
+    let start = std::time::Instant::now();
+    while ctx.shared.plugins.lock().unwrap().is_none()
+        && ctx.shared.plugins_loading.load(Ordering::SeqCst)
+        && start.elapsed() < Duration::from_secs(120)
+    {
+        match ctx.cmds.recv_timeout(Duration::from_millis(100)) {
+            Ok(Cmd::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => return false,
+            Ok(Cmd::Seek(s)) => PENDING_SEEK.with(|p| p.set(Some(s))),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        if ctx.shared.active.load(Ordering::SeqCst) != ctx.generation {
+            return false;
+        }
+    }
+    true
+}
+
 fn decode(ctx: &DecodeCtx) -> Result<(), String> {
+    if !wait_for_plugins(ctx) {
+        return Ok(());
+    }
     let plugins = ctx.shared.plugins.lock().unwrap().clone();
     let mut track = open_track(&ctx.source, plugins.as_ref())?;
     let info = track.info().clone();

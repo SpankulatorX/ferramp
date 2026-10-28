@@ -69,16 +69,21 @@ pub fn find_host(arch: Arch) -> Option<PathBuf> {
         }
     }
     // A development checkout: target/<windows target>/<profile>/ferramp-plughost.exe.
-    let triple = match arch {
-        Arch::X86 => "i686-pc-windows-gnu",
-        Arch::X64 => "x86_64-pc-windows-gnu",
-    };
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
-    for t in [triple, &triple.replace("-gnu", "-msvc")] {
-        for profile in ["release", "debug"] {
-            let p = root.join(t).join(profile).join("ferramp-plughost.exe");
-            if p.is_file() {
-                return Some(p);
+    // Only in debug and test builds: a release build must not run programs
+    // from the path it happened to be compiled in.
+    #[cfg(any(debug_assertions, test))]
+    {
+        let triple = match arch {
+            Arch::X86 => "i686-pc-windows-gnu",
+            Arch::X64 => "x86_64-pc-windows-gnu",
+        };
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        for t in [triple, &triple.replace("-gnu", "-msvc")] {
+            for profile in ["release", "debug"] {
+                let p = root.join(t).join(profile).join("ferramp-plughost.exe");
+                if p.is_file() {
+                    return Some(p);
+                }
             }
         }
     }
@@ -126,7 +131,6 @@ pub struct Host {
     pending: Pending,
     next_id: AtomicU32,
     alive: Arc<AtomicBool>,
-    pub arch: Arch,
 }
 
 #[derive(Debug)]
@@ -224,7 +228,6 @@ impl Host {
             pending,
             next_id: AtomicU32::new(1),
             alive,
-            arch,
         })
     }
 
@@ -270,6 +273,14 @@ impl Host {
             return Err(e);
         }
         Ok(rx)
+    }
+
+    /// Ends the host at once (it hung).
+    pub fn kill(&self) {
+        let mut c = self.child.lock().unwrap();
+        let _ = c.kill();
+        let _ = c.wait();
+        self.alive.store(false, Ordering::SeqCst);
     }
 
     pub fn shutdown(&self) {

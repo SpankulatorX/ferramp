@@ -31,7 +31,49 @@ impl TrackInfo {
     }
 }
 
+/// Tags and duration, from the file itself or from the input plugin that
+/// plays it.
 pub fn read(path: &Path) -> Option<TrackInfo> {
+    if let Some(sys) = crate::plugins::global()
+        && sys.prefers(path)
+    {
+        return read_via_plugin(&sys, path).or_else(|| read_tags(path));
+    }
+    read_tags(path).or_else(|| crate::plugins::global().and_then(|sys| read_via_plugin(&sys, path)))
+}
+
+fn read_via_plugin(sys: &crate::plugins::Plugins, path: &Path) -> Option<TrackInfo> {
+    let fi = sys.file_info(path)?;
+    let tag = |k: &str| {
+        fi.tags
+            .iter()
+            .find(|(key, _)| key == k)
+            .map(|(_, v)| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    let mut info = TrackInfo {
+        artist: tag("artist"),
+        title: tag("title"),
+        album: tag("album"),
+        genre: tag("genre"),
+        comment: tag("comment"),
+        year: tag("year").and_then(|y| y.get(..4).and_then(|y| y.parse().ok())),
+        track_no: tag("track")
+            .and_then(|t| t.split('/').next().and_then(|n| n.trim().parse().ok())),
+        duration: (fi.length_ms > 0).then(|| fi.length_ms as f64 / 1000.0),
+        bitrate: tag("bitrate")
+            .and_then(|b| b.parse::<u32>().ok())
+            .map(|b| if b > 10_000 { b / 1000 } else { b }),
+        ..Default::default()
+    };
+    // Plugins without extended info give a ready-made title.
+    if info.title.is_none() && !fi.title.trim().is_empty() {
+        info.title = Some(fi.title.trim().to_string());
+    }
+    Some(info)
+}
+
+fn read_tags(path: &Path) -> Option<TrackInfo> {
     let tagged = lofty::read_from_path(path).ok()?;
     let props = tagged.properties();
     let mut info = TrackInfo {
@@ -93,11 +135,18 @@ pub const AUDIO_EXTENSIONS: &[&str] = &[
     "mp4", "aac", "alac", "caf", "mka", "webm",
 ];
 
+/// Whether a folder scan should add `p`: a built-in format, or one an
+/// input plugin plays.
 pub fn is_audio_file(p: &Path) -> bool {
-    p.extension()
+    let Some(ext) = p
+        .extension()
         .and_then(|e| e.to_str())
-        .map(|e| AUDIO_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
-        .unwrap_or(false)
+        .map(|e| e.to_ascii_lowercase())
+    else {
+        return false;
+    };
+    AUDIO_EXTENSIONS.contains(&ext.as_str())
+        || crate::plugins::global().is_some_and(|sys| sys.extensions().contains(&ext))
 }
 
 pub fn is_playlist_file(p: &Path) -> bool {

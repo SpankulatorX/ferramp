@@ -52,6 +52,8 @@ struct Registry {
     scanned: bool,
     ini_dir: String,
     dirs: Vec<String>,
+    skip: Vec<String>,
+    inputs_only: bool,
 }
 
 static REG: Mutex<Registry> = Mutex::new(Registry {
@@ -59,10 +61,14 @@ static REG: Mutex<Registry> = Mutex::new(Registry {
     scanned: false,
     ini_dir: String::new(),
     dirs: Vec::new(),
+    skip: Vec::new(),
+    inputs_only: false,
 });
 
-pub fn set_dirs(ini_dir: &str, dirs: &[String]) {
+pub fn set_dirs(ini_dir: &str, dirs: &[String], skip: Vec<String>, inputs_only: bool) {
     let mut r = REG.lock().unwrap();
+    r.inputs_only = inputs_only;
+    r.skip = skip.into_iter().map(|s| s.to_lowercase()).collect();
     r.ini_dir = text::to_win_path(ini_dir);
     r.dirs = dirs.iter().map(|d| text::to_win_path(d)).collect();
     super::general::set_dirs(&r.ini_dir, r.dirs.first().map(String::as_str).unwrap_or(""));
@@ -124,7 +130,10 @@ pub fn scan() -> Vec<PluginInfo> {
             return r.plugins.iter().map(|p| p.info.clone()).collect();
         }
     }
-    let dirs = REG.lock().unwrap().dirs.clone();
+    let (dirs, skip, inputs_only) = {
+        let r = REG.lock().unwrap();
+        (r.dirs.clone(), r.skip.clone(), r.inputs_only)
+    };
     let mut files: Vec<(Kind, String, String)> = Vec::new();
     for dir in &dirs {
         let Ok(rd) = std::fs::read_dir(dir) else {
@@ -147,18 +156,38 @@ pub fn scan() -> Vec<PluginInfo> {
             }
         }
     }
-    let order = [
-        Kind::Input,
-        Kind::Output,
-        Kind::Dsp,
-        Kind::Vis,
-        Kind::General,
-    ];
-    for kind in order {
+    let order: &[Kind] = if inputs_only {
+        &[Kind::Input]
+    } else {
+        &[
+            Kind::Input,
+            Kind::Output,
+            Kind::Dsp,
+            Kind::Vis,
+            Kind::General,
+        ]
+    };
+    for &kind in order {
         for (k, name, path) in files.iter().filter(|f| f.0 == kind) {
-            log(format!("loading {name}"));
             let id = REG.lock().unwrap().plugins.len() as u32;
+            if skip.contains(&name.to_lowercase()) {
+                REG.lock().unwrap().plugins.push(Plugin {
+                    info: PluginInfo {
+                        id,
+                        file: name.clone(),
+                        kind: Some(*k),
+                        description: name.clone(),
+                        error: Some("disabled".into()),
+                        ..Default::default()
+                    },
+                    hmod: Ptr(std::ptr::null_mut()),
+                    data: Data::Failed,
+                });
+                continue;
+            }
+            log(format!("loading {name}"));
             let plugin = unsafe { load(id, *k, name, path) };
+            log(format!("loaded {name}"));
             REG.lock().unwrap().plugins.push(plugin);
         }
     }
@@ -176,6 +205,9 @@ unsafe fn load(id: u32, kind: Kind, name: &str, path: &str) -> Plugin {
     };
     let fail = |mut info: PluginInfo, e: &str| {
         info.error = Some(e.to_string());
+        if info.description.trim().is_empty() {
+            info.description = info.file.clone();
+        }
         Plugin {
             info,
             hmod: Ptr(std::ptr::null_mut()),

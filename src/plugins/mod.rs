@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ferramp_plugproto::{
     Command, FileInfo, FromHost, Kind, PlEntry, PlayerState, PluginInfo, ToHost,
@@ -39,10 +39,6 @@ pub struct Plugin {
 }
 
 impl Plugin {
-    pub fn kind(&self) -> Option<Kind> {
-        self.info.kind
-    }
-
     /// Lower-case extensions the plugin claims.
     pub fn extensions(&self) -> impl Iterator<Item = String> + '_ {
         self.info
@@ -54,6 +50,18 @@ impl Plugin {
     }
 }
 
+/// The running plugin system, for code without access to the app (the tag
+/// reader thread, folder scans).
+static GLOBAL: RwLock<Option<Arc<Plugins>>> = RwLock::new(None);
+
+pub fn global() -> Option<Arc<Plugins>> {
+    GLOBAL.read().unwrap().clone()
+}
+
+pub fn set_global(p: Option<Arc<Plugins>>) {
+    *GLOBAL.write().unwrap() = p;
+}
+
 /// Events for one open input stream.
 pub type StreamTx = Sender<FromHost>;
 
@@ -62,21 +70,43 @@ struct Routes {
     streams: HashMap<u32, StreamTx>,
 }
 
+/// What the host event threads share with the rest.
+struct Hub {
+    routes: Mutex<Routes>,
+    commands: Mutex<VecDeque<Command>>,
+    vis_open: AtomicBool,
+    wake: Arc<dyn Fn() + Send + Sync>,
+    log_dir: PathBuf,
+    /// When the host last reported loading progress, and the plugin it was
+    /// loading then (`None` once it finished).
+    progress: Mutex<(Instant, Option<String>)>,
+}
+
 pub struct Plugins {
     dirs: Vec<PathBuf>,
     ini_dir: PathBuf,
-    log_dir: PathBuf,
     hosts: Mutex<HashMap<Arch, Arc<Host>>>,
+    /// Hosts with only the input plugins, for file information: a plugin
+    /// that crashes on a question must not stop what is playing.
+    info_hosts: Mutex<HashMap<Arch, Arc<Host>>>,
     list: RwLock<Vec<Plugin>>,
-    routes: Arc<Mutex<Routes>>,
-    commands: Arc<Mutex<VecDeque<Command>>>,
-    vis_open: Arc<AtomicBool>,
+    hub: Arc<Hub>,
+    /// Plugin files not to load, with the reason.
+    skip: Mutex<HashMap<String, String>>,
     /// Host of the active DSP and visualization modules.
     dsp: Mutex<Option<Arch>>,
     vis: Mutex<Option<Arch>>,
+    out: Mutex<Option<Arch>>,
     next_stream: AtomicU32,
     errors: Mutex<Vec<String>>,
-    wake: Arc<dyn Fn() + Send + Sync>,
+    /// Plugins whose file information query crashed the host; not asked again.
+    no_info: Mutex<Vec<String>>,
+}
+
+impl std::fmt::Debug for Plugins {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Plugins({} loaded)", self.list.read().unwrap().len())
+    }
 }
 
 impl Plugins {
@@ -90,22 +120,46 @@ impl Plugins {
         Plugins {
             dirs,
             ini_dir,
-            log_dir,
             hosts: Mutex::new(HashMap::new()),
+            info_hosts: Mutex::new(HashMap::new()),
             list: RwLock::new(Vec::new()),
-            routes: Arc::new(Mutex::new(Routes::default())),
-            commands: Arc::new(Mutex::new(VecDeque::new())),
-            vis_open: Arc::new(AtomicBool::new(false)),
+            hub: Arc::new(Hub {
+                routes: Mutex::new(Routes::default()),
+                commands: Mutex::new(VecDeque::new()),
+                vis_open: AtomicBool::new(false),
+                wake,
+                log_dir,
+                progress: Mutex::new((Instant::now(), None)),
+            }),
+            skip: Mutex::new(HashMap::new()),
             dsp: Mutex::new(None),
             vis: Mutex::new(None),
+            out: Mutex::new(None),
             next_stream: AtomicU32::new(1),
             errors: Mutex::new(Vec::new()),
-            wake,
+            no_info: Mutex::new(Vec::new()),
         }
     }
 
-    pub fn dirs(&self) -> &[PathBuf] {
-        &self.dirs
+    /// Plugins not to load (user-disabled, or hung before), file name to reason.
+    pub fn set_skip(&self, skip: HashMap<String, String>) {
+        *self.skip.lock().unwrap() = skip
+            .into_iter()
+            .map(|(k, v)| (k.to_lowercase(), v))
+            .collect();
+    }
+
+    /// Plugins not to ask for file information (they crashed on it).
+    pub fn set_no_info(&self, files: Vec<String>) {
+        *self.no_info.lock().unwrap() = files;
+    }
+
+    pub fn no_info(&self) -> Vec<String> {
+        self.no_info.lock().unwrap().clone()
+    }
+
+    pub fn skipped(&self) -> HashMap<String, String> {
+        self.skip.lock().unwrap().clone()
     }
 
     /// Plugin DLLs in the plugin folders, grouped by the CPU they need.
@@ -132,15 +186,22 @@ impl Plugins {
     }
 
     /// Starts the hosts and loads every plugin. Blocking; call it from a
-    /// background thread.
+    /// background thread. A plugin that hangs while loading is left out
+    /// (and remembered in the skip list) and the host is started again.
     pub fn start(&self) {
         let files = self.plugin_files();
         let mut all = Vec::new();
         let mut errors = Vec::new();
         for (arch, paths) in files {
-            match self.start_host(arch) {
-                Ok(h) => match h.request(&ToHost::Scan, Duration::from_secs(120)) {
-                    Ok(FromHost::Plugins(list)) => {
+            let mut attempts = 0;
+            loop {
+                attempts += 1;
+                match self
+                    .start_host(arch)
+                    .map_err(ScanError::Host)
+                    .and_then(|h| self.scan(&h))
+                {
+                    Ok(list) => {
                         for info in list {
                             let path = paths
                                 .iter()
@@ -153,11 +214,31 @@ impl Plugins {
                                 .unwrap_or_else(|| PathBuf::from(&info.file));
                             all.push(Plugin { arch, path, info });
                         }
+                        break;
                     }
-                    Ok(other) => errors.push(format!("unexpected reply {other:?}")),
-                    Err(e) => errors.push(e.to_string()),
-                },
-                Err(e) => errors.push(e.to_string()),
+                    Err(ScanError::Hung(file)) if attempts < 8 => {
+                        if let Some(h) = self.hosts.lock().unwrap().remove(&arch) {
+                            h.kill();
+                        }
+                        self.skip.lock().unwrap().insert(
+                            file.to_lowercase(),
+                            "stopped responding while loading".into(),
+                        );
+                    }
+                    Err(e) => {
+                        errors.push(e.to_string());
+                        break;
+                    }
+                }
+            }
+        }
+        // Explain plugins the host skipped.
+        let skip = self.skipped();
+        for p in &mut all {
+            if p.info.error.as_deref() == Some("disabled")
+                && let Some(why) = skip.get(&p.info.file.to_lowercase())
+            {
+                p.info.error = Some(why.clone());
             }
         }
         all.sort_by_key(|p| {
@@ -170,41 +251,89 @@ impl Plugins {
         *self.errors.lock().unwrap() = errors;
     }
 
+    /// Asks the host to load its plugins, watching its progress.
+    fn scan(&self, h: &Host) -> Result<Vec<PluginInfo>, ScanError> {
+        *self.hub.progress.lock().unwrap() = (Instant::now(), None);
+        let rx = h.request_async(&ToHost::Scan).map_err(ScanError::Host)?;
+        let started = Instant::now();
+        loop {
+            match rx.recv_timeout(Duration::from_millis(250)) {
+                Ok(FromHost::Plugins(list)) => return Ok(list),
+                Ok(other) => {
+                    return Err(ScanError::Host(HostError::Failed(format!(
+                        "unexpected reply {other:?}"
+                    ))));
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    // It crashed: blame the plugin it was loading.
+                    let (_, loading) = self.hub.progress.lock().unwrap().clone();
+                    return Err(match loading {
+                        Some(f) => ScanError::Hung(f),
+                        None => ScanError::Host(HostError::Dead),
+                    });
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            let (at, loading) = self.hub.progress.lock().unwrap().clone();
+            if let Some(f) = loading
+                && at.elapsed() > LOAD_TIMEOUT
+            {
+                return Err(ScanError::Hung(f));
+            }
+            if started.elapsed() > Duration::from_secs(600) {
+                return Err(ScanError::Host(HostError::Timeout));
+            }
+        }
+    }
+
     fn start_host(&self, arch: Arch) -> Result<Arc<Host>, HostError> {
-        if let Some(h) = self.hosts.lock().unwrap().get(&arch)
+        self.start_host_kind(arch, false)
+    }
+
+    fn start_host_kind(&self, arch: Arch, inputs_only: bool) -> Result<Arc<Host>, HostError> {
+        let map = if inputs_only {
+            &self.info_hosts
+        } else {
+            &self.hosts
+        };
+        if let Some(h) = map.lock().unwrap().get(&arch)
             && h.alive()
         {
             return Ok(h.clone());
         }
         let (tx, rx) = mpsc::channel::<FromHost>();
-        let _ = std::fs::create_dir_all(&self.log_dir);
-        let log = self
-            .log_dir
-            .join(format!("plughost-{arch:?}.log").to_lowercase());
-        let host = Arc::new(Host::spawn(arch, Some(&log), tx)?);
-        let (routes, commands, vis_open, wake) = (
-            self.routes.clone(),
-            self.commands.clone(),
-            self.vis_open.clone(),
-            self.wake.clone(),
+        let _ = std::fs::create_dir_all(&self.hub.log_dir);
+        let log = self.hub.log_dir.join(
+            format!(
+                "plughost-{arch:?}{}.log",
+                if inputs_only { "-info" } else { "" }
+            )
+            .to_lowercase(),
         );
-        let log_dir = self.log_dir.clone();
+        let host = Arc::new(Host::spawn(arch, Some(&log), tx)?);
+        let hub = self.hub.clone();
         std::thread::Builder::new()
             .name("plughost-events".into())
             .spawn(move || {
                 for ev in rx {
-                    dispatch(ev, &routes, &commands, &vis_open, &*wake, &log_dir);
+                    dispatch(ev, &hub);
                 }
                 // The host is gone: end every stream that was waiting on it.
-                let streams: Vec<StreamTx> =
-                    routes.lock().unwrap().streams.values().cloned().collect();
+                let streams: Vec<StreamTx> = hub
+                    .routes
+                    .lock()
+                    .unwrap()
+                    .streams
+                    .values()
+                    .cloned()
+                    .collect();
                 for s in streams {
                     let _ = s.send(FromHost::StreamFailed {
                         stream: 0,
                         msg: "the plugin host stopped".into(),
                     });
                 }
-                vis_open.store(false, Ordering::SeqCst);
+                hub.vis_open.store(false, Ordering::SeqCst);
             })
             .map_err(|e| HostError::Failed(e.to_string()))?;
         let dirs: Vec<String> = self
@@ -218,12 +347,53 @@ impl Plugins {
                 protocol: ferramp_plugproto::PROTOCOL,
                 ini_dir: self.ini_dir.to_string_lossy().into_owned(),
                 plugin_dirs: dirs,
+                skip: self.skip.lock().unwrap().keys().cloned().collect(),
+                inputs_only,
             },
             // A fresh Wine prefix can take a while to set up.
             Duration::from_secs(120),
         )?;
-        self.hosts.lock().unwrap().insert(arch, host.clone());
+        map.lock().unwrap().insert(arch, host.clone());
         Ok(host)
+    }
+
+    /// The input-only host for file information, started on first use.
+    fn info_host(&self, arch: Arch) -> Option<Arc<Host>> {
+        if let Some(h) = self.info_hosts.lock().unwrap().get(&arch)
+            && h.alive()
+        {
+            return Some(h.clone());
+        }
+        let h = self.start_host_kind(arch, true).ok()?;
+        self.scan(&h).ok()?;
+        Some(h)
+    }
+
+    /// The loaded plugin with this file name.
+    pub fn by_file(&self, file: &str) -> Option<Plugin> {
+        self.list
+            .read()
+            .unwrap()
+            .iter()
+            .find(|p| p.info.file.eq_ignore_ascii_case(file))
+            .cloned()
+    }
+
+    /// Wine (or nothing, on Windows) and the host programs, for the
+    /// plugin dialog.
+    pub fn runtime_status() -> String {
+        let host = host::find_host(Arch::X86).map(|p| p.display().to_string());
+        if cfg!(windows) {
+            return match host {
+                Some(_) => "Plugins run in ferramp-plughost.".into(),
+                None => "ferramp-plughost-x86.exe is missing next to ferramp.exe.".into(),
+            };
+        }
+        match (host::find_wine(), host) {
+            (Some(w), Some(_)) => format!("Plugins run under Wine ({}).", w.display()),
+            (None, _) => "Install Wine to use Windows plugins (wine on the PATH).".into(),
+            (_, None) => "The plugin host program is not installed.".into(),
+        }
     }
 
     pub fn list(&self) -> Vec<Plugin> {
@@ -248,7 +418,7 @@ impl Plugins {
             // Restart a host that died; its plugins are loaded again.
             Some(_) => {
                 let h = self.start_host(arch).ok()?;
-                h.request(&ToHost::Scan, Duration::from_secs(120)).ok()?;
+                self.scan(&h).ok()?;
                 Some(h)
             }
             None => None,
@@ -287,7 +457,10 @@ impl Plugins {
 
     pub fn file_info(&self, path: &Path) -> Option<FileInfo> {
         let p = self.input_for(path)?;
-        let h = self.host(p.arch)?;
+        if self.no_info.lock().unwrap().contains(&p.info.file) {
+            return None;
+        }
+        let h = self.info_host(p.arch)?;
         match h.request(
             &ToHost::FileInfo {
                 plugin: p.info.id,
@@ -296,6 +469,12 @@ impl Plugins {
             Duration::from_secs(10),
         ) {
             Ok(FromHost::Info(i)) => Some(i),
+            Err(HostError::Dead) | Err(HostError::Timeout) => {
+                // Some plugins crash when asked about a file they are not
+                // playing; play them, but do not ask again.
+                self.no_info.lock().unwrap().push(p.info.file.clone());
+                None
+            }
             _ => None,
         }
     }
@@ -334,12 +513,12 @@ impl Plugins {
 
     fn register_stream(&self, tx: StreamTx) -> u32 {
         let id = self.next_stream.fetch_add(1, Ordering::SeqCst);
-        self.routes.lock().unwrap().streams.insert(id, tx);
+        self.hub.routes.lock().unwrap().streams.insert(id, tx);
         id
     }
 
     fn unregister_stream(&self, id: u32) {
-        self.routes.lock().unwrap().streams.remove(&id);
+        self.hub.routes.lock().unwrap().streams.remove(&id);
     }
 
     // ------------------------------------------------------------------
@@ -391,12 +570,86 @@ impl Plugins {
     }
 
     // ------------------------------------------------------------------
+    // Output
+
+    /// Opens an output plugin; returns its latency in ms.
+    pub fn out_open(&self, p: &Plugin, rate: u32, channels: u32, bits: u32) -> Result<i32, String> {
+        let h = self.host(p.arch).ok_or("the plugin host is not running")?;
+        match h.request(
+            &ToHost::OutOpen {
+                plugin: p.info.id,
+                rate,
+                channels,
+                bits,
+            },
+            Duration::from_secs(10),
+        ) {
+            Ok(FromHost::OutOpened { latency_ms }) => {
+                *self.out.lock().unwrap() = Some(p.arch);
+                Ok(latency_ms)
+            }
+            Ok(other) => Err(format!("unexpected reply {other:?}")),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    fn out_host(&self) -> Option<Arc<Host>> {
+        let a = (*self.out.lock().unwrap())?;
+        self.hosts
+            .lock()
+            .unwrap()
+            .get(&a)
+            .cloned()
+            .filter(|h| h.alive())
+    }
+
+    pub fn out_write(&self, data: Vec<u8>) -> bool {
+        self.out_host()
+            .is_some_and(|h| h.send(&ToHost::OutWrite(data)).is_ok())
+    }
+
+    /// (bytes it can take, ms played, ms written), or None if it is gone.
+    pub fn out_status(&self) -> Option<(u32, u32, u32)> {
+        match self
+            .out_host()?
+            .request(&ToHost::OutQuery, Duration::from_secs(2))
+        {
+            Ok(FromHost::OutStatus {
+                can_write,
+                output_ms,
+                written_ms,
+                ..
+            }) => Some((can_write, output_ms, written_ms)),
+            _ => None,
+        }
+    }
+
+    pub fn out_pause(&self, pause: bool) {
+        if let Some(h) = self.out_host() {
+            let _ = h.send(&ToHost::OutPause(pause));
+        }
+    }
+
+    pub fn out_flush(&self, ms: u32) {
+        if let Some(h) = self.out_host() {
+            let _ = h.send(&ToHost::OutFlush(ms));
+        }
+    }
+
+    pub fn out_close(&self) {
+        if let Some(h) = self.out_host() {
+            let _ = h.send(&ToHost::OutClose);
+        }
+        *self.out.lock().unwrap() = None;
+    }
+
+    // ------------------------------------------------------------------
     // Visualization
 
     pub fn vis_start(&self, p: &Plugin, module: u32) {
         self.vis_stop();
         if let Some(h) = self.host(p.arch) {
-            self.vis_open.store(true, Ordering::SeqCst);
+            self.hub.vis_open.store(true, Ordering::SeqCst);
             *self.vis.lock().unwrap() = Some(p.arch);
             let _ = h.request(
                 &ToHost::VisStart {
@@ -414,12 +667,12 @@ impl Plugins {
         {
             let _ = h.request(&ToHost::VisStop, Duration::from_secs(5));
         }
-        self.vis_open.store(false, Ordering::SeqCst);
+        self.hub.vis_open.store(false, Ordering::SeqCst);
     }
 
     /// Whether a visualization plugin is running (it may close itself).
     pub fn vis_running(&self) -> bool {
-        self.vis_open.load(Ordering::SeqCst)
+        self.hub.vis_open.load(Ordering::SeqCst)
     }
 
     pub fn vis_pcm(&self, rate: u32, channels: u32, samples: Vec<i16>) {
@@ -479,27 +732,22 @@ impl Plugins {
 
     /// Requests from plugins since the last call.
     pub fn take_commands(&self) -> Vec<Command> {
-        self.commands.lock().unwrap().drain(..).collect()
+        self.hub.commands.lock().unwrap().drain(..).collect()
     }
 
     pub fn shutdown(&self) {
         self.vis_stop();
         self.dsp_stop();
-        let hosts: Vec<Arc<Host>> = self.hosts.lock().unwrap().drain().map(|(_, h)| h).collect();
+        let mut hosts: Vec<Arc<Host>> =
+            self.hosts.lock().unwrap().drain().map(|(_, h)| h).collect();
+        hosts.extend(self.info_hosts.lock().unwrap().drain().map(|(_, h)| h));
         for h in hosts {
             h.shutdown();
         }
     }
 }
 
-fn dispatch(
-    ev: FromHost,
-    routes: &Mutex<Routes>,
-    commands: &Mutex<VecDeque<Command>>,
-    vis_open: &AtomicBool,
-    wake: &(dyn Fn() + Send + Sync),
-    log_dir: &Path,
-) {
+fn dispatch(ev: FromHost, hub: &Hub) {
     let stream_of = |e: &FromHost| match e {
         FromHost::Opened { stream, .. }
         | FromHost::Pcm { stream, .. }
@@ -510,7 +758,7 @@ fn dispatch(
         _ => None,
     };
     if let Some(id) = stream_of(&ev) {
-        let tx = routes.lock().unwrap().streams.get(&id).cloned();
+        let tx = hub.routes.lock().unwrap().streams.get(&id).cloned();
         if let Some(tx) = tx {
             let _ = tx.send(ev);
         }
@@ -518,23 +766,47 @@ fn dispatch(
     }
     match ev {
         FromHost::Command(c) => {
-            commands.lock().unwrap().push_back(c);
-            wake();
+            hub.commands.lock().unwrap().push_back(c);
+            (hub.wake)();
         }
         FromHost::VisClosed => {
-            vis_open.store(false, Ordering::SeqCst);
-            wake();
+            hub.vis_open.store(false, Ordering::SeqCst);
+            (hub.wake)();
         }
         FromHost::Log(s) => {
+            if let Some(f) = s.strip_prefix("loading ") {
+                *hub.progress.lock().unwrap() = (Instant::now(), Some(f.to_string()));
+            } else if s.starts_with("loaded ") {
+                *hub.progress.lock().unwrap() = (Instant::now(), None);
+            }
             use std::io::Write;
             if let Ok(mut f) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(log_dir.join("plugins.log"))
+                .open(hub.log_dir.join("plugins.log"))
             {
                 let _ = writeln!(f, "{s}");
             }
         }
         _ => {}
+    }
+}
+
+/// How long one plugin may take to load before it is left out.
+const LOAD_TIMEOUT: Duration = Duration::from_secs(25);
+
+#[derive(Debug)]
+enum ScanError {
+    /// The host stopped responding (or crashed) while loading this file.
+    Hung(String),
+    Host(HostError),
+}
+
+impl std::fmt::Display for ScanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ScanError::Hung(p) => write!(f, "{p} stopped responding while loading"),
+            ScanError::Host(e) => write!(f, "{e}"),
+        }
     }
 }

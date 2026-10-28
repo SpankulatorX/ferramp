@@ -437,7 +437,25 @@ pub fn copydata(l: LPARAM) -> LRESULT {
 
 /// Sends the change notifications the original window sent to itself, so
 /// plugins that subclass it hear about them. Runs on the main thread.
+/// The original window's title was "N. Title - Winamp" while playing; some
+/// plugins and outside tools read it to learn what is playing.
+fn update_title(h: HWND) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::SetWindowTextW;
+    let t = with(|s| {
+        let pos = s.state.playlist_pos;
+        match s.playlist.get(pos.max(0) as usize) {
+            Some(e) if s.state.status != 0 => {
+                let paused = if s.state.status == 3 { " [Paused]" } else { "" };
+                format!("{}. {} - Winamp{paused}", pos + 1, e.title)
+            }
+            _ => "Winamp 5.66".to_string(),
+        }
+    });
+    unsafe { SetWindowTextW(h, wide(&t).as_ptr()) };
+}
+
 pub fn notify(h: HWND) {
+    update_title(h);
     let (now, file_a, file_w) = with(|s| {
         let st = &s.state;
         let now = (

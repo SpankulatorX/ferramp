@@ -76,6 +76,19 @@ pub enum MenuId {
     Time,
 }
 
+/// Buttons of the plugin dialog, applied to the selected row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PluginAction {
+    Configure,
+    About,
+    /// Start or stop a DSP, visualization or output plugin.
+    Use,
+    /// Load the plugin at start, or not.
+    Enable,
+    Folder,
+    Rescan,
+}
+
 /// Commands: everything the user can do, from any window, menu or key.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd {
@@ -125,6 +138,12 @@ pub enum Cmd {
     MuseumSelect(usize),
     MuseumDownload(usize),
     MuseumWeb,
+    /// Classic plugins: the plugin dialog, the selected visualization
+    /// plugin's configuration, a row picked in the dialog, a button there.
+    PluginsDialog,
+    VisPluginConfig,
+    PluginSelect(usize),
+    PluginAction(PluginAction, usize),
     AddBookmark,
     BookmarkSelected,
     EditBookmarks,

@@ -1,3 +1,9 @@
+// The plugin modules are `static mut` the host writes into, so they are
+// reached through raw pointers (`&raw mut`); a reference to them would be
+// undefined behaviour, which is what `deref_addrof` suggests. The extension
+// block holds embedded NULs, which a `c""` literal cannot.
+#![allow(clippy::deref_addrof, clippy::manual_c_str_literals)]
+
 use std::ffi::{CStr, c_char, c_int, c_short, c_void};
 use std::io::Write;
 use std::ptr::null_mut;
@@ -671,7 +677,7 @@ unsafe extern "C" fn vis_init(m: *mut winampVisModule) -> c_int {
 }
 unsafe extern "C" fn vis_render(m: *mut winampVisModule) -> c_int {
     let n = VIS_RENDERS.fetch_add(1, Ordering::SeqCst) + 1;
-    if n % 20 == 0 {
+    if n.is_multiple_of(20) {
         let m = unsafe { &*m };
         let spec: u64 = m.spectrumData[0].iter().map(|&v| v as u64).sum();
         let wave = m.waveformData[0]

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
@@ -38,6 +39,18 @@ pub enum UserEvent {
     Picked(Pick, Vec<PathBuf>),
     Classic(crate::classic_skin::Fetched),
     Museum(crate::museum::Fetched),
+    /// The plugin hosts have loaded their plugins.
+    PluginsReady(Arc<crate::plugins::Plugins>),
+}
+
+/// What was last sent to the plugin hosts, to send only changes.
+#[derive(Default)]
+struct PlugSync {
+    next_state: Option<Instant>,
+    last_state: Option<ferramp_plugproto::PlayerState>,
+    playlist_sig: u64,
+    next_vis: Option<Instant>,
+    vis_was_running: bool,
 }
 
 /// State of the Skin Museum dialog's searches and downloads.
@@ -175,6 +188,11 @@ pub struct App {
     cli_skin: bool,
     classic_busy: bool,
     museum: Museum,
+    plugins: Option<Arc<crate::plugins::Plugins>>,
+    plugins_ready: bool,
+    plug: PlugSync,
+    /// The plugin dialog's rows: (file name, module).
+    plugin_rows: Vec<(String, u32)>,
     tip: Option<Tooltip>,
     hover_tip: Option<(WinKind, String, Instant)>,
     next_frame: Instant,
@@ -233,6 +251,10 @@ impl App {
             cli_skin: false,
             classic_busy: false,
             museum: Museum::default(),
+            plugins: None,
+            plugins_ready: false,
+            plug: PlugSync::default(),
+            plugin_rows: Vec::new(),
             tip: None,
             hover_tip: None,
             next_frame: Instant::now(),
@@ -612,6 +634,7 @@ impl App {
             let paths: Vec<PathBuf> = files.iter().map(PathBuf::from).collect();
             self.open_paths(paths, true);
         }
+        self.start_plugins();
         self.created = true;
     }
 
@@ -1137,7 +1160,8 @@ impl App {
             (_, Some('k')) if m.ctrl && m.shift => Some(Cmd::ToggleVisPlugin),
             (_, Some(c)) if m.alt => match c {
                 'i' => Some(Cmd::AddBookmark),
-                'o' | 'k' => Some(Cmd::VisOptionsDialog),
+                'o' => Some(Cmd::VisOptionsDialog),
+                'k' => Some(Cmd::VisPluginConfig),
                 'w' => Some(Cmd::ToggleWindow(WinKind::Main)),
                 'e' => Some(Cmd::ToggleWindow(WinKind::Playlist)),
                 'g' => Some(Cmd::ToggleWindow(WinKind::Eq)),
@@ -1146,6 +1170,7 @@ impl App {
                 _ => None,
             },
             (_, Some(c)) if m.ctrl => match c {
+                'k' => Some(Cmd::PluginsDialog),
                 'd' => Some(Cmd::ToggleDouble),
                 'a' => Some(Cmd::ToggleAlwaysOnTop),
                 'e' => Some(Cmd::ToggleEasyMove),
@@ -1157,7 +1182,6 @@ impl App {
                 'z' => Some(Cmd::StartOfList),
                 'r' => Some(Cmd::PlReverse),
                 'w' => Some(Cmd::ToggleShade(focused)),
-                'k' => Some(Cmd::VisOptionsDialog),
                 _ => None,
             },
             (_, Some(c)) => match c {
@@ -1877,7 +1901,11 @@ impl App {
             if let Some(s) = &start {
                 d = d.set_directory(s);
             }
-            let audio: Vec<&str> = metadata::AUDIO_EXTENSIONS.to_vec();
+            let plugin_ext: Vec<String> = crate::plugins::global()
+                .map(|s| s.extensions())
+                .unwrap_or_default();
+            let mut audio: Vec<&str> = metadata::AUDIO_EXTENSIONS.to_vec();
+            audio.extend(plugin_ext.iter().map(String::as_str));
             let result: Vec<PathBuf> = match pick {
                 Pick::OpenFiles | Pick::AddFiles => d
                     .set_title(if pick == Pick::OpenFiles {
@@ -2136,6 +2164,11 @@ impl App {
     // Commands
 
     fn run(&mut self, el: &ActiveEventLoop, cmd: Cmd) {
+        // With a visualization plugin chosen, Ctrl+Shift+K starts and stops it.
+        if cmd == Cmd::ToggleVisPlugin && self.selected_vis_plugin().is_some() {
+            self.toggle_vis_plugin();
+            return;
+        }
         debug!("cmd: {cmd:?}");
         let st = &mut self.st;
         st.dirty = true;
@@ -2306,6 +2339,7 @@ impl App {
                 self.exiting = true;
                 self.save_settings();
                 self.st.engine.stop();
+                self.stop_plugins();
                 el.exit();
             }
             Cmd::About => self.open_dialog(el, Dialog::about()),
@@ -2326,6 +2360,14 @@ impl App {
                 }
             }
             Cmd::FileInfo => {
+                // Files an input plugin plays get that plugin's own info box.
+                if let Some(sys) = self.plugins.clone().filter(|_| self.plugins_ready)
+                    && let Some(p) = self.selected_or_current_path()
+                    && sys.prefers(&p)
+                    && sys.info_box(&p)
+                {
+                    return;
+                }
                 if let Some(d) = self.file_info_dialog() {
                     self.open_dialog(el, d);
                 }
@@ -2406,6 +2448,18 @@ impl App {
                 let d = Dialog::vis_options(self.st.vis_mode, self.st.vis_opts);
                 self.open_dialog(el, d);
             }
+            Cmd::PluginsDialog => self.open_plugins_dialog(el),
+            Cmd::VisPluginConfig => {
+                if let Some((p, m)) = self.selected_vis_plugin() {
+                    if let Some(sys) = &self.plugins {
+                        sys.configure(&p, m);
+                    }
+                } else {
+                    self.st.push(Cmd::VisOptionsDialog);
+                }
+            }
+            Cmd::PluginSelect(row) => self.plugin_selected(row),
+            Cmd::PluginAction(a, row) => self.plugin_action(a, row),
             Cmd::ToggleVisPlugin => {
                 if st.vis_mode == VisMode::Off {
                     st.vis_mode = self.last_vis_mode;
@@ -2651,6 +2705,7 @@ impl App {
             }
         }
         self.poll_audio();
+        self.poll_plugins();
         // Everything below runs at the frame rate; other wake-ups (input,
         // redraw requests) must not spin the loop.
         if now < self.next_frame {
@@ -2786,6 +2841,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Picked(p, paths) => self.picked(el, p, paths),
             UserEvent::Classic(f) => self.classic_fetched(el, f),
             UserEvent::Museum(f) => self.museum_fetched(el, f),
+            UserEvent::PluginsReady(sys) => self.plugins_loaded(sys),
         }
     }
 
@@ -3391,6 +3447,625 @@ fn app_icon() -> winit::window::Icon {
         }
     }
     winit::window::Icon::from_rgba(b.to_rgba8(), 32, 32).expect("icon")
+}
+
+// ----------------------------------------------------------------------
+// Classic plugins
+
+impl App {
+    fn plugin_dirs(&self) -> Vec<PathBuf> {
+        let mut v = vec![config::config_dir().join("Plugins")];
+        if let Some(extra) = self.settings.get_str("plugin_dirs") {
+            v.extend(
+                extra
+                    .split(';')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(PathBuf::from),
+            );
+        }
+        v
+    }
+
+    /// Plugins left out at start: disabled in the dialog, or found hanging.
+    fn plugin_skip(&self) -> HashMap<String, String> {
+        self.settings
+            .get_str("plugins_skip")
+            .unwrap_or("")
+            .split(';')
+            .filter_map(|kv| kv.split_once('='))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    fn save_plugin_skip(&mut self, skip: &HashMap<String, String>) {
+        let mut v: Vec<String> = skip
+            .iter()
+            .map(|(k, r)| format!("{k}={}", r.replace([';', '='], ",")))
+            .collect();
+        v.sort();
+        self.settings.set("plugins_skip", v.join(";"));
+    }
+
+    fn save_plugin_noinfo(&mut self) {
+        if let Some(sys) = &self.plugins {
+            let v = sys.no_info().join(";");
+            if self.settings.get_str("plugins_noinfo").unwrap_or("") != v {
+                self.settings.set("plugins_noinfo", v);
+            }
+        }
+    }
+
+    /// Starts the plugin hosts in the background if there are plugins.
+    fn start_plugins(&mut self) {
+        let dirs = self.plugin_dirs();
+        let main_dir = dirs[0].clone();
+        if std::fs::create_dir_all(&main_dir).is_ok() {
+            let readme = main_dir.join("README.txt");
+            if !readme.exists() {
+                let _ = std::fs::write(
+                    &readme,
+                    "Put classic player plug-ins here: in_*.dll (input), out_*.dll (output),\n\
+                     dsp_*.dll (effects), vis_*.dll (visualization) and gen_*.dll (general).\n\
+                     Libraries they need go in the folder above this one.\n\
+                     On Linux and macOS they run under Wine. See Options > Plug-ins.\n",
+                );
+            }
+        }
+        let proxy = self.proxy.clone();
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            let _ = proxy.send_event(UserEvent::Wake);
+        });
+        let dir = config::config_dir();
+        let sys = Arc::new(crate::plugins::Plugins::new(
+            dirs,
+            dir.join("PluginSettings"),
+            dir.join("logs"),
+            wake,
+        ));
+        sys.set_skip(self.plugin_skip());
+        sys.set_no_info(
+            self.settings
+                .get_str("plugins_noinfo")
+                .unwrap_or("")
+                .split(';')
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect(),
+        );
+        self.plugins = Some(sys.clone());
+        self.plugins_ready = false;
+        if sys.plugin_files().is_empty() {
+            return;
+        }
+        self.st.engine.set_plugins_loading(true);
+        let proxy = self.proxy.clone();
+        let _ = std::thread::Builder::new()
+            .name("plugins".into())
+            .spawn(move || {
+                sys.start();
+                let _ = proxy.send_event(UserEvent::PluginsReady(sys));
+            });
+    }
+
+    fn stop_plugins(&mut self) {
+        self.save_plugin_noinfo();
+        if self.output_plugin_active() {
+            self.switch_output(None);
+        }
+        if let Some(sys) = self.plugins.take() {
+            self.st.engine.set_plugins(None);
+            crate::plugins::set_global(None);
+            sys.shutdown();
+        }
+        self.plugins_ready = false;
+    }
+
+    fn plugins_loaded(&mut self, sys: Arc<crate::plugins::Plugins>) {
+        // A reload may have replaced the system meanwhile.
+        if !self.plugins.as_ref().is_some_and(|p| Arc::ptr_eq(p, &sys)) {
+            sys.shutdown();
+            return;
+        }
+        self.plugins_ready = true;
+        crate::plugins::set_global(Some(sys.clone()));
+        self.st.engine.set_plugins(Some(sys.clone()));
+        // Remember plugins that hung, so the next start leaves them out at once.
+        self.save_plugin_skip(&sys.skipped());
+        if let Some((p, m)) = self.plugin_setting("plugin_dsp") {
+            let _ = sys.dsp_start(&p, m);
+        }
+        if let Some((p, _)) = self.plugin_setting("plugin_out") {
+            self.switch_output(Some(p));
+        }
+        if self.settings.get_bool("plugin_vis_on", false)
+            && let Some((p, m)) = self.selected_vis_plugin()
+        {
+            sys.vis_start(&p, m);
+            self.plug.vis_was_running = true;
+        }
+        // Playlist entries in formats only a plugin reads get their tags now.
+        let ids: Vec<u64> = self
+            .st
+            .playlist
+            .entries
+            .iter()
+            .filter(|e| e.path().is_some_and(|p| sys.prefers(p)))
+            .map(|e| e.id)
+            .collect();
+        self.request_info(&ids);
+        self.plug = PlugSync {
+            vis_was_running: self.plug.vis_was_running,
+            ..Default::default()
+        };
+        self.refresh_plugins_dialog();
+        self.st.dirty = true;
+    }
+
+    /// A saved "file<TAB>module" choice, if that plugin is loaded.
+    fn plugin_setting(&self, key: &str) -> Option<(crate::plugins::Plugin, u32)> {
+        let sys = self.plugins.as_ref()?;
+        let v = self.settings.get_str(key)?;
+        let (file, m) = v.split_once('\t').unwrap_or((v, "0"));
+        let p = sys.by_file(file).filter(|p| p.info.error.is_none())?;
+        Some((p, m.parse().unwrap_or(0)))
+    }
+
+    fn selected_vis_plugin(&self) -> Option<(crate::plugins::Plugin, u32)> {
+        if !self.plugins_ready {
+            return None;
+        }
+        self.plugin_setting("plugin_vis")
+    }
+
+    fn output_plugin_active(&self) -> bool {
+        self.settings
+            .get_str("plugin_out")
+            .is_some_and(|s| !s.is_empty())
+            && self.plugins_ready
+    }
+
+    /// Plays through an output plugin, or the sound card again with `None`;
+    /// a playing track continues where it was.
+    fn switch_output(&mut self, p: Option<crate::plugins::Plugin>) {
+        let resume = (self.st.status() != Status::Stopped)
+            .then(|| (self.st.playlist.current, self.st.position()));
+        let out = match (&p, &self.plugins) {
+            (Some(p), Some(sys)) => Some((sys.clone(), p.clone())),
+            _ => None,
+        };
+        match self.st.engine.set_output(out) {
+            Ok(()) => {
+                let v = p.map(|p| format!("{}\t0", p.info.file)).unwrap_or_default();
+                self.settings.set("plugin_out", v);
+            }
+            Err(e) => {
+                self.st.show_message(format!("Output plug-in: {e}"), 3.0);
+                self.settings.set("plugin_out", "");
+                let _ = self.st.engine.set_output(None);
+            }
+        }
+        if let Some((Some(i), pos)) = resume {
+            self.st.push(Cmd::PlayIndex(i));
+            if pos > 0.5 {
+                self.st.push(Cmd::SeekTo(pos));
+            }
+        }
+        self.st.dirty = true;
+    }
+
+    fn toggle_vis_plugin(&mut self) {
+        let Some(sys) = self.plugins.clone() else {
+            return;
+        };
+        if sys.vis_running() {
+            sys.vis_stop();
+            self.settings.set_bool("plugin_vis_on", false);
+        } else if let Some((p, m)) = self.selected_vis_plugin() {
+            sys.vis_start(&p, m);
+            self.plug.vis_was_running = true;
+            self.settings.set_bool("plugin_vis_on", true);
+        }
+        self.refresh_plugins_dialog();
+    }
+
+    fn selected_or_current_path(&self) -> Option<PathBuf> {
+        let pl = &self.st.playlist;
+        let i = pl.entries.iter().position(|e| e.selected).or(pl.current)?;
+        pl.entries.get(i)?.path().map(Path::to_path_buf)
+    }
+
+    fn player_state(&self) -> ferramp_plugproto::PlayerState {
+        let st = &self.st;
+        let mut eq: Vec<u8> = st.eq.bands.to_vec();
+        eq.push(st.eq.preamp);
+        eq.push(st.eq.enabled as u8);
+        ferramp_plugproto::PlayerState {
+            status: match st.status() {
+                Status::Playing => 1,
+                Status::Paused => 3,
+                Status::Stopped => 0,
+            },
+            position_ms: (st.position().max(0.0) * 1000.0) as u32,
+            length_ms: st.duration().map(|d| (d * 1000.0) as i32).unwrap_or(-1),
+            volume: st.volume as u32 * 255 / 100,
+            pan: st.balance as i32 * 127 / 100,
+            playlist_pos: st.playlist.current.map(|c| c as i32).unwrap_or(0),
+            shuffle: st.shuffle,
+            repeat: st.repeat,
+            rate: st.now.khz * 1000,
+            kbps: st.now.kbps,
+            channels: st.now.channels,
+            eq,
+        }
+    }
+
+    fn playlist_signature(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for e in &self.st.playlist.entries {
+            e.id.hash(&mut h);
+            e.title.hash(&mut h);
+            e.duration.map(|d| d as i64).hash(&mut h);
+        }
+        h.finish()
+    }
+
+    /// Runs every frame: plugin requests in, player state and audio out.
+    fn poll_plugins(&mut self) {
+        let Some(sys) = self.plugins.clone() else {
+            return;
+        };
+        for c in sys.take_commands() {
+            self.plugin_command(c);
+        }
+        if !self.plugins_ready {
+            return;
+        }
+        let now = Instant::now();
+        if sys.has_general() && self.plug.next_state.is_none_or(|t| now >= t) {
+            self.plug.next_state = Some(now + Duration::from_millis(200));
+            let sig = self.playlist_signature();
+            if sig != self.plug.playlist_sig {
+                self.plug.playlist_sig = sig;
+                let entries: Vec<ferramp_plugproto::PlEntry> = self
+                    .st
+                    .playlist
+                    .entries
+                    .iter()
+                    .map(|e| ferramp_plugproto::PlEntry {
+                        file: e.location(),
+                        title: e.title.clone(),
+                        length_s: e.duration.map(|d| d.round() as i32).unwrap_or(-1),
+                    })
+                    .collect();
+                sys.send_playlist(&entries);
+            }
+            let state = self.player_state();
+            if self.plug.last_state.as_ref() != Some(&state) {
+                sys.send_state(&state);
+                self.plug.last_state = Some(state);
+            }
+        }
+        if sys.no_info().len()
+            != self
+                .settings
+                .get_str("plugins_noinfo")
+                .map(|s| s.split(';').filter(|x| !x.is_empty()).count())
+                .unwrap_or(0)
+        {
+            self.save_plugin_noinfo();
+        }
+        if sys.vis_running() {
+            if self.plug.next_vis.is_none_or(|t| now >= t) {
+                self.plug.next_vis = Some(now + Duration::from_millis(20));
+                let mut buf = Vec::new();
+                self.st.engine.vis_samples(&mut buf);
+                let samples: Vec<i16> = buf
+                    .iter()
+                    .rev()
+                    .take(1152)
+                    .rev()
+                    .map(|v| (v.clamp(-1.0, 1.0) * 32767.0) as i16)
+                    .collect();
+                sys.vis_pcm(self.st.engine.out_rate(), 1, samples);
+            }
+        } else if self.plug.vis_was_running {
+            // The plugin closed its window itself.
+            self.plug.vis_was_running = false;
+            self.settings.set_bool("plugin_vis_on", false);
+            self.st.dirty = true;
+        }
+    }
+
+    /// Something a general purpose plugin asked the player to do.
+    fn plugin_command(&mut self, c: ferramp_plugproto::Command) {
+        use ferramp_plugproto::Command as P;
+        let cmd = match c {
+            P::Play | P::StartPlay => Cmd::Play,
+            P::Pause => Cmd::Pause,
+            P::Stop => Cmd::Stop,
+            P::FadeStop => Cmd::StopFadeout,
+            P::Next => Cmd::Next,
+            P::Prev => Cmd::Previous,
+            P::SeekMs(ms) => Cmd::SeekTo(ms as f64 / 1000.0),
+            P::Forward5 => Cmd::SeekBy(5.0),
+            P::Rewind5 => Cmd::SeekBy(-5.0),
+            P::Volume(v) => Cmd::SetVolume((v.min(255) * 100 / 255) as u8),
+            P::VolumeUp => Cmd::VolumeBy(1),
+            P::VolumeDown => Cmd::VolumeBy(-1),
+            P::Pan(p) => Cmd::SetBalance((p.clamp(-127, 127) * 100 / 127) as i8),
+            P::PlaylistPos(i) => {
+                if i >= 0 && (i as usize) < self.st.playlist.len() {
+                    self.st.playlist.set_current(i as usize);
+                    self.st.dirty = true;
+                }
+                return;
+            }
+            P::ClearPlaylist => Cmd::PlClear,
+            P::Enqueue(path) => Cmd::OpenLocation(path, false),
+            P::PlayFile(path) => Cmd::OpenLocation(path, true),
+            P::Shuffle(on) if on != self.st.shuffle => Cmd::ToggleShuffle,
+            P::Repeat(on) if on != self.st.repeat => Cmd::ToggleRepeat,
+            P::Shuffle(_) | P::Repeat(_) => return,
+            P::Eq(v) => {
+                for (i, b) in v.iter().take(10).enumerate() {
+                    self.st.push(Cmd::EqSetBand(i, (*b).min(63)));
+                }
+                if let Some(p) = v.get(10) {
+                    self.st.push(Cmd::EqSetPreamp((*p).min(63)));
+                }
+                if let Some(on) = v.get(11)
+                    && (*on != 0) != self.st.eq.enabled
+                {
+                    self.st.push(Cmd::EqToggleOn);
+                }
+                return;
+            }
+            P::OpenFiles => Cmd::OpenFiles,
+            P::Preferences => Cmd::Preferences,
+            P::Quit => Cmd::Exit,
+        };
+        self.st.push(cmd);
+    }
+
+    fn plugin_dialog_rows(&mut self) -> Vec<String> {
+        self.plugin_rows.clear();
+        let Some(sys) = self.plugins.clone() else {
+            return vec![];
+        };
+        let skip = sys.skipped();
+        let active_dsp = self.settings.get_str("plugin_dsp").map(str::to_string);
+        let active_out = self.settings.get_str("plugin_out").map(str::to_string);
+        let active_vis = self.settings.get_str("plugin_vis").map(str::to_string);
+        let mut rows = Vec::new();
+        let mut push = |rows: &mut Vec<String>, p: &crate::plugins::Plugin, m: u32, label: &str| {
+            let key = format!("{}\t{m}", p.info.file);
+            let kind = match p.info.kind {
+                Some(ferramp_plugproto::Kind::Input) => "Input",
+                Some(ferramp_plugproto::Kind::Output) => "Output",
+                Some(ferramp_plugproto::Kind::Dsp) => "DSP",
+                Some(ferramp_plugproto::Kind::Vis) => "Vis",
+                Some(ferramp_plugproto::Kind::General) => "General",
+                None => "?",
+            };
+            let mark = if active_dsp.as_deref() == Some(&key) && sys.dsp_active()
+                || active_out.as_deref() == Some(&key)
+            {
+                "> "
+            } else if active_vis.as_deref() == Some(&key) {
+                if sys.vis_running() { "> " } else { "* " }
+            } else if skip.contains_key(&p.info.file.to_lowercase()) || p.info.error.is_some() {
+                "x "
+            } else {
+                "  "
+            };
+            rows.push(format!("{mark}[{kind}] {label}"));
+            self.plugin_rows.push((p.info.file.clone(), m));
+        };
+        for p in sys.list() {
+            if p.info.modules.len() > 1 {
+                for (i, m) in p.info.modules.iter().enumerate() {
+                    push(
+                        &mut rows,
+                        &p,
+                        i as u32,
+                        &format!("{} - {m}", p.info.description),
+                    );
+                }
+            } else {
+                push(&mut rows, &p, 0, &p.info.description);
+            }
+        }
+        rows
+    }
+
+    fn open_plugins_dialog(&mut self, el: &ActiveEventLoop) {
+        let rows = self.plugin_dialog_rows();
+        let mut runtime = crate::plugins::Plugins::runtime_status();
+        if let Some(e) = self
+            .plugins
+            .as_ref()
+            .and_then(|s| s.errors().into_iter().next())
+        {
+            runtime = format!("{runtime} Problem: {e}");
+        }
+        if let Some(sys) = &self.plugins {
+            if !self.plugins_ready && !sys.plugin_files().is_empty() {
+                runtime = format!("Loading plug-ins... {runtime}");
+            } else if rows.is_empty() {
+                runtime = format!(
+                    "No plug-ins found in {}. {runtime}",
+                    self.plugin_dirs()[0].display()
+                );
+            }
+        }
+        self.open_dialog(el, Dialog::plugins(rows, &runtime));
+    }
+
+    fn refresh_plugins_dialog(&mut self) {
+        if !self
+            .dialogs
+            .iter()
+            .any(|d| d.dialog.kind == DialogKind::Plugins)
+        {
+            return;
+        }
+        let rows = self.plugin_dialog_rows();
+        let runtime = crate::plugins::Plugins::runtime_status();
+        for d in &mut self.dialogs {
+            if d.dialog.kind == DialogKind::Plugins {
+                let sel = d.dialog.selected_row();
+                d.dialog = Dialog::plugins(rows.clone(), &runtime);
+                if let Some(i) = sel {
+                    d.dialog.select_row(i);
+                }
+                d.os.window.request_redraw();
+            }
+        }
+        if let Some(i) = self
+            .dialogs
+            .iter()
+            .find(|d| d.dialog.kind == DialogKind::Plugins)
+            .and_then(|d| d.dialog.selected_row())
+        {
+            self.plugin_selected(i);
+        }
+    }
+
+    fn row_plugin(&self, row: usize) -> Option<(crate::plugins::Plugin, u32)> {
+        let (file, m) = self.plugin_rows.get(row)?.clone();
+        Some((self.plugins.as_ref()?.by_file(&file)?, m))
+    }
+
+    fn plugin_selected(&mut self, row: usize) {
+        let Some((p, _)) = self.row_plugin(row) else {
+            return;
+        };
+        let skip = self
+            .plugins
+            .as_ref()
+            .map(|s| s.skipped())
+            .unwrap_or_default();
+        let title = format!("{} ({})", p.info.description, p.path.display());
+        let detail = if let Some(why) = skip.get(&p.info.file.to_lowercase()) {
+            format!("Not loaded: {why}. Enable it and press Reload to try again.")
+        } else if let Some(e) = &p.info.error {
+            format!("Could not be used: {e}.")
+        } else {
+            match p.info.kind {
+                Some(ferramp_plugproto::Kind::Input) => {
+                    let ext: Vec<String> = p.extensions().take(12).collect();
+                    let more = p.extensions().count().saturating_sub(12);
+                    format!(
+                        "Plays {}{}.",
+                        ext.join(", "),
+                        if more > 0 {
+                            format!(" and {more} more")
+                        } else {
+                            String::new()
+                        }
+                    )
+                }
+                Some(ferramp_plugproto::Kind::Dsp) => {
+                    "Effect. Start / Stop applies it to everything played.".into()
+                }
+                Some(ferramp_plugproto::Kind::Vis) => {
+                    "Visualization. Start / Stop, or Ctrl+Shift+K.".into()
+                }
+                Some(ferramp_plugproto::Kind::Output) => {
+                    "Output. Start / Stop plays through it instead of the sound card.".into()
+                }
+                Some(ferramp_plugproto::Kind::General) => {
+                    "General purpose plug-in, running.".into()
+                }
+                None => String::new(),
+            }
+        };
+        for d in &mut self.dialogs {
+            if d.dialog.kind == DialogKind::Plugins {
+                d.dialog.set_details(&title, &detail);
+                d.os.window.request_redraw();
+            }
+        }
+    }
+
+    fn plugin_action(&mut self, action: crate::ui::PluginAction, row: usize) {
+        use crate::ui::PluginAction as A;
+        let Some(sys) = self.plugins.clone() else {
+            return;
+        };
+        match action {
+            A::Folder => {
+                let dir = self.plugin_dirs()[0].clone();
+                let _ = std::fs::create_dir_all(&dir);
+                open_url(&dir.to_string_lossy());
+                return;
+            }
+            A::Rescan => {
+                self.stop_plugins();
+                self.start_plugins();
+                self.refresh_plugins_dialog();
+                for d in &mut self.dialogs {
+                    if d.dialog.kind == DialogKind::Plugins {
+                        d.dialog.set_details("Loading plug-ins...", "");
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
+        let Some((p, m)) = self.row_plugin(row) else {
+            return;
+        };
+        let key = format!("{}\t{m}", p.info.file);
+        match action {
+            A::Configure => sys.configure(&p, m),
+            A::About => sys.about(&p, m),
+            A::Use => match p.info.kind {
+                Some(ferramp_plugproto::Kind::Dsp) => {
+                    if sys.dsp_active() && self.settings.get_str("plugin_dsp") == Some(key.as_str())
+                    {
+                        sys.dsp_stop();
+                        self.settings.set("plugin_dsp", "");
+                    } else if sys.dsp_start(&p, m).is_ok() {
+                        self.settings.set("plugin_dsp", key);
+                    }
+                }
+                Some(ferramp_plugproto::Kind::Output) => {
+                    if self.settings.get_str("plugin_out") == Some(key.as_str()) {
+                        self.switch_output(None);
+                    } else {
+                        self.switch_output(Some(p.clone()));
+                    }
+                }
+                Some(ferramp_plugproto::Kind::Vis) => {
+                    let same = self.settings.get_str("plugin_vis") == Some(key.as_str());
+                    if sys.vis_running() && same {
+                        sys.vis_stop();
+                        self.settings.set_bool("plugin_vis_on", false);
+                    } else {
+                        self.settings.set("plugin_vis", key);
+                        sys.vis_start(&p, m);
+                        self.plug.vis_was_running = true;
+                        self.settings.set_bool("plugin_vis_on", true);
+                    }
+                }
+                _ => {}
+            },
+            A::Enable => {
+                let mut skip = self.plugin_skip();
+                let f = p.info.file.to_lowercase();
+                if skip.remove(&f).is_none() {
+                    skip.insert(f, "disabled in the plug-in list".into());
+                }
+                self.save_plugin_skip(&skip);
+                sys.set_skip(skip);
+            }
+            A::Folder | A::Rescan => {}
+        }
+        self.refresh_plugins_dialog();
+    }
 }
 
 #[cfg(test)]

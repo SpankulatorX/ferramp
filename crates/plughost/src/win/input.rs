@@ -226,6 +226,7 @@ fn play_classic(s: Arc<Stream>, plugin: u32, inp: Input, win: &str) {
             None => -1,
         }
     };
+    super::log(format!("Play({win}) returned {r}"));
     if r != 0 {
         *PUSH.lock().unwrap() = None;
         if let Some(map) = STREAMS.lock().unwrap().as_mut() {
@@ -294,6 +295,7 @@ pub fn close_all() {
 
 /// The plugin posted "end of file" to the player window.
 pub fn eof() {
+    super::log("end of file posted");
     if let Some(p) = push() {
         event(FromHost::Eof {
             stream: p.stream.id,
@@ -399,6 +401,7 @@ static mut FAKE_OUT: Out_Module = Out_Module {
 };
 
 unsafe extern "C" fn fo_open(rate: c_int, nch: c_int, bps: c_int, _: c_int, _: c_int) -> c_int {
+    super::log(format!("output Open({rate}, {nch}, {bps})"));
     let Some(p) = push() else { return -1 };
     if rate <= 0 || nch <= 0 || !matches!(bps, 8 | 16 | 24 | 32) {
         return -1;

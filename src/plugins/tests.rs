@@ -214,8 +214,7 @@ fn all_plugin_kinds_end_to_end() {
     assert!(vlog.contains("init parent=true"), "{vlog}");
     let line = vlog
         .lines()
-        .filter(|l| l.starts_with("render"))
-        .last()
+        .rfind(|l| l.starts_with("render"))
         .expect("renders");
     let spec: u64 = line
         .split("spectrum=")
@@ -287,8 +286,111 @@ fn all_plugin_kinds_end_to_end() {
         sys.take_commands().contains(&Command::Next)
     });
 
+    // Output: the engine plays a track through the test output plugin.
+    // SAFETY: no other thread reads the environment here.
+    unsafe { std::env::set_var("FERRAMP_NULL_AUDIO", "1") };
+    let mut engine = crate::audio::Engine::new();
+    engine.set_plugins(Some(sys.clone()));
+    let out = list
+        .iter()
+        .find(|p| p.info.kind == Some(Kind::Output))
+        .unwrap()
+        .clone();
+    engine
+        .set_output(Some((sys.clone(), out)))
+        .expect("open output plugin");
+    engine.play(crate::audio::Source::File(tone.clone()));
+    wait_for(
+        "the track to play through the output plugin",
+        Duration::from_secs(20),
+        || engine.finished(),
+    );
+    let olog = read_log(&logs, "out.log");
+    assert!(olog.contains("open 44100 2 16"), "{olog}");
+    // 1.5 s at 44.1 kHz, 16-bit stereo, plus the resampler's tail.
+    let raw = std::fs::metadata(logs.join("out.raw"))
+        .map(|m| m.len())
+        .unwrap_or(0);
+    assert!((250_000..290_000).contains(&raw), "wrote {raw} bytes");
+    engine.set_output(None).unwrap();
+    drop(engine);
+
     sys.shutdown();
     let glog = read_log(&logs, "gen.log");
     assert!(glog.contains("quit"), "{glog}");
     let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Loads real plugins from `$FERRAMP_REAL_PLUGIN_DIR` and prints what each
+/// reported; with `$FERRAMP_REAL_PLUGIN_FILES` (paths separated by `|`),
+/// also plays a few seconds of each file through its input plugin.
+#[test]
+#[ignore]
+fn real_plugins_report() {
+    let Some(dir) = std::env::var_os("FERRAMP_REAL_PLUGIN_DIR").map(PathBuf::from) else {
+        return;
+    };
+    let base = std::env::temp_dir().join(format!("ferramp-realplug-{}", std::process::id()));
+    let sys = Arc::new(Plugins::new(
+        vec![dir],
+        base.join("ini"),
+        base.join("logs"),
+        Arc::new(|| {}),
+    ));
+    let t0 = Instant::now();
+    sys.start();
+    println!(
+        "started in {:.1} s; host errors: {:?}",
+        t0.elapsed().as_secs_f32(),
+        sys.errors()
+    );
+    for p in sys.list() {
+        println!(
+            "{:<8} {:<22} {:?} | {} | modules {:?} | ext {} | xr={} uni={} | error {:?}",
+            format!("{:?}", p.arch),
+            p.info.file,
+            p.info.kind.map(|k| k.label()),
+            p.info.description,
+            p.info.modules,
+            p.extensions().collect::<Vec<_>>().join(","),
+            p.info.extended_read,
+            p.info.unicode,
+            p.info.error
+        );
+    }
+    let files = std::env::var("FERRAMP_REAL_PLUGIN_FILES").unwrap_or_default();
+    for f in files.split('|').filter(|f| !f.is_empty()) {
+        let path = Path::new(f);
+        let who = sys.input_for(path).map(|p| p.info.file).unwrap_or_default();
+        let info = sys.file_info(path);
+        match PluginTrack::open(&sys, path) {
+            Ok(mut t) => {
+                let mut frames = Vec::new();
+                let start = Instant::now();
+                while frames.len() < t.info().rate as usize * 3
+                    && start.elapsed() < Duration::from_secs(15)
+                {
+                    if !t.read(&mut frames).unwrap_or(false) {
+                        break;
+                    }
+                }
+                let peak = frames
+                    .iter()
+                    .map(|f| f[0].abs().max(f[1].abs()))
+                    .fold(0.0f32, f32::max);
+                println!(
+                    "PLAY {} via {who}: {} Hz {} ch, {:?} s, {} frames in {:.1} s, peak {peak:.2}, info {:?}",
+                    path.display(),
+                    t.info().rate,
+                    t.info().channels,
+                    t.info().duration,
+                    frames.len(),
+                    start.elapsed().as_secs_f32(),
+                    info.map(|i| (i.title, i.length_ms, i.tags))
+                );
+            }
+            Err(e) => println!("PLAY {} via {who}: FAILED {e}", path.display()),
+        }
+    }
+    sys.shutdown();
 }

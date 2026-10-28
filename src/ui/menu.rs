@@ -194,6 +194,7 @@ pub fn build(id: MenuId, ctx: &MenuContext) -> Vec<Item> {
         }
         MenuId::Options => vec![
             act("&Preferences...", "Ctrl+P", Cmd::Preferences),
+            act("Plug-&ins...", "Ctrl+K", Cmd::PluginsDialog),
             sub("&Skins", build(MenuId::Skins, ctx)),
             Item::Sep,
             check(
@@ -252,8 +253,8 @@ pub fn build(id: MenuId, ctx: &MenuContext) -> Vec<Item> {
                 Cmd::ToggleVisPlugin,
                 st.vis_mode != VisMode::Off,
             ),
-            act("&Configure plug-in...", "Alt+K", Cmd::VisOptionsDialog),
-            act("S&elect plug-in...", "Ctrl+K", Cmd::VisOptionsDialog),
+            act("&Configure plug-in...", "Alt+K", Cmd::VisPluginConfig),
+            act("S&elect plug-in...", "Ctrl+K", Cmd::PluginsDialog),
         ],
         MenuId::EqPresets => vec![
             sub(

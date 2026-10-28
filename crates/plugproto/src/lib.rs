@@ -158,6 +158,11 @@ pub enum ToHost {
         ini_dir: String,
         /// Folders to load plugins from, host-side paths.
         plugin_dirs: Vec<String>,
+        /// Plugin file names not to load (disabled, or hung last time).
+        skip: Vec<String>,
+        /// Load only input plugins (a host that answers file information
+        /// questions, kept apart from the one that plays).
+        inputs_only: bool,
     },
     Scan,
     Configure {
@@ -540,7 +545,7 @@ wire_enum!(Command {
 });
 
 wire_enum!(ToHost {
-    0 => Hello { protocol, ini_dir, plugin_dirs },
+    0 => Hello { protocol, ini_dir, plugin_dirs, skip, inputs_only },
     1 => Scan,
     2 => Configure { plugin, module },
     3 => About { plugin, module },
@@ -646,6 +651,8 @@ mod tests {
             protocol: PROTOCOL,
             ini_dir: "Z:\\home\\x".into(),
             plugin_dirs: vec!["a".into(), "b".into()],
+            skip: vec!["gen_x.dll".into()],
+            inputs_only: true,
         });
         roundtrip(ToHost::DspProcess {
             rate: 44100,

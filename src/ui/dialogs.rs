@@ -28,6 +28,7 @@ pub enum DialogKind {
     VisOptions,
     ClassicSkin,
     SkinMuseum,
+    Plugins,
 }
 
 #[derive(Clone, Debug)]
@@ -497,6 +498,113 @@ impl Dialog {
         d
     }
 
+    /// The classic plugins: one row per plugin (or per module of a DSP or
+    /// visualization plugin), what the selected one is, and what can be
+    /// done with it.
+    pub fn plugins(rows: Vec<String>, runtime: &str) -> Dialog {
+        let c = vec![
+            Control::Label {
+                text: "Classic plug-ins (in_, out_, dsp_, vis_ and gen_ DLL files):".into(),
+                rect: r(12, 10, 520, 14),
+                bold: false,
+            },
+            Control::List {
+                values: (0..rows.len()).collect(),
+                items: rows,
+                selected: None,
+                scroll: 0,
+                rect: r(12, 28, 520, 244),
+            },
+            Control::Label {
+                text: "Pick a plug-in.".into(),
+                rect: r(12, 280, 520, 14),
+                bold: true,
+            },
+            Control::Label {
+                text: String::new(),
+                rect: r(12, 296, 520, 14),
+                bold: false,
+            },
+            Control::Label {
+                text: runtime.to_string(),
+                rect: r(12, 312, 520, 14),
+                bold: false,
+            },
+            Control::Button {
+                label: "Configure".into(),
+                rect: r(12, 336, 80, 23),
+                id: "configure",
+                default: false,
+            },
+            Control::Button {
+                label: "About".into(),
+                rect: r(98, 336, 70, 23),
+                id: "about",
+                default: false,
+            },
+            Control::Button {
+                label: "Start / Stop".into(),
+                rect: r(174, 336, 90, 23),
+                id: "use",
+                default: false,
+            },
+            Control::Button {
+                label: "Enable / Disable".into(),
+                rect: r(270, 336, 110, 23),
+                id: "enable",
+                default: false,
+            },
+            Control::Button {
+                label: "Folder".into(),
+                rect: r(12, 366, 80, 23),
+                id: "folder",
+                default: false,
+            },
+            Control::Button {
+                label: "Reload".into(),
+                rect: r(98, 366, 70, 23),
+                id: "rescan",
+                default: false,
+            },
+            Control::Button {
+                label: "Close".into(),
+                rect: r(452, 366, 80, 23),
+                id: "cancel",
+                default: true,
+            },
+        ];
+        let mut d = Dialog::new(DialogKind::Plugins, "Plug-ins", 544, 400, c);
+        d.status = Some(2);
+        d
+    }
+
+    /// Replaces the plugin dialog's detail lines (the status line and the one
+    /// below it).
+    pub fn set_details(&mut self, title: &str, detail: &str) {
+        if let Some(Control::Label { text, .. }) = self.controls.get_mut(2) {
+            *text = title.to_string();
+        }
+        if let Some(Control::Label { text, .. }) = self.controls.get_mut(3) {
+            *text = detail.to_string();
+        }
+    }
+
+    pub fn selected_row(&self) -> Option<usize> {
+        self.selected_value()
+    }
+
+    pub fn select_row(&mut self, i: usize) {
+        if let Some((items, _, sel, scroll, rect)) = self.list()
+            && i < items.len()
+        {
+            *sel = Some(i);
+            let rows = ((rect.h - 4) / 16).max(1) as usize;
+            if i >= *scroll + rows {
+                *scroll = i + 1 - rows;
+            }
+        }
+    }
+
     /// Search and download skins from the Winamp Skin Museum.
     pub fn skin_museum() -> Dialog {
         let mut c = vec![
@@ -963,6 +1071,30 @@ impl Dialog {
             )]),
             (DialogKind::SkinMuseum, "more") => Outcome::Run(vec![Cmd::MuseumMore]),
             (DialogKind::SkinMuseum, "web") => Outcome::Run(vec![Cmd::MuseumWeb]),
+            (
+                DialogKind::Plugins,
+                a @ ("configure" | "about" | "use" | "enable" | "folder" | "rescan"),
+            ) => {
+                use crate::ui::PluginAction as P;
+                let action = match a {
+                    "configure" => P::Configure,
+                    "about" => P::About,
+                    "use" => P::Use,
+                    "enable" => P::Enable,
+                    "folder" => P::Folder,
+                    _ => P::Rescan,
+                };
+                let row = self.selected_value().unwrap_or(usize::MAX);
+                Outcome::Run(vec![Cmd::PluginAction(action, row)])
+            }
+            // A double click on a row configures it.
+            (DialogKind::Plugins, "ok") => match self.selected_value() {
+                Some(i) => Outcome::Run(vec![Cmd::PluginAction(
+                    crate::ui::PluginAction::Configure,
+                    i,
+                )]),
+                None => Outcome::None,
+            },
             (DialogKind::SkinMuseum, "ok") => match self.selected_value() {
                 Some(i) => Outcome::Run(vec![Cmd::MuseumDownload(i)]),
                 None => Outcome::None,
@@ -1012,6 +1144,12 @@ impl Dialog {
     }
 
     fn list_changed(&mut self) -> Outcome {
+        if self.kind == DialogKind::Plugins {
+            return match self.selected_value() {
+                Some(i) => Outcome::Run(vec![Cmd::PluginSelect(i)]),
+                None => Outcome::None,
+            };
+        }
         if self.kind == DialogKind::SkinMuseum {
             return match self.selected_value() {
                 Some(i) => Outcome::Run(vec![Cmd::MuseumSelect(i)]),
