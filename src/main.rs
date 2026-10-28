@@ -73,7 +73,14 @@ fn main() {
             }
             "--render" => {
                 let dir = args.get(i + 1).cloned().unwrap_or_else(|| "render".into());
-                let rest: Vec<String> = args.drain(i + 2..).collect();
+                let mut rest: Vec<String> = args.drain((i + 2).min(args.len())..).collect();
+                // --skin may also follow --render DIR, as the README shows.
+                if let Some(j) = rest.iter().position(|a| a == "--skin")
+                    && j + 1 < rest.len()
+                {
+                    skin_path = Some(rest.remove(j + 1));
+                    rest.remove(j);
+                }
                 render::render_all(std::path::Path::new(&dir), skin_path.as_deref(), &rest);
                 return;
             }

@@ -488,6 +488,15 @@ impl App {
         {
             self.st.skin = s;
         }
+        // First start: dock the windows at their real size, which depends on
+        // the monitor scale, instead of the 1x defaults.
+        if self.settings.get_str("main_y").is_none() {
+            let main_h = self.phys_size(WinKind::Main).1;
+            let eq_h = self.phys_size(WinKind::Eq).1;
+            let (x, y) = (self.st.main.x, self.st.main.y);
+            (self.st.eqw.x, self.st.eqw.y) = (x, y + main_h);
+            (self.st.pl.x, self.st.pl.y) = (x, y + main_h + eq_h);
+        }
         // Keep windows on screen if the saved positions are off every monitor.
         self.ensure_on_screen(el);
         for k in [WinKind::Main, WinKind::Eq, WinKind::Playlist] {
