@@ -2,13 +2,14 @@
 
 A cross-platform audio player in Rust that recreates the look and feel
 of the classic Winamp 2 player: main window, graphical equalizer and
-playlist editor, docked together, pixel for pixel. It
-runs on Linux, Windows and macOS. Every line of code and every pixel of
-the built-in skin was written from scratch, and it is free software
-(MIT or Apache-2.0).
+playlist editor, docked together. It runs on Linux, Windows and macOS.
+Every line of code and every pixel of the built-in skin was written from
+scratch, so the built-in skin is Ferramp's own and not the original
+artwork. Ferramp is free software (MIT or Apache-2.0).
 
 Load any classic Winamp 2 `.wsz` skin, including the original base skin
-if you have it, and the windows look exactly as they did in the original.
+if you have it, and the windows look the way they did in the original,
+pixel for pixel.
 
 ![Ferramp with its built-in skin: main window, equalizer and playlist editor](docs/screenshot.png)
 

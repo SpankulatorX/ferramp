@@ -1,7 +1,18 @@
-The first release of Ferramp, a from-scratch recreation of the classic
-2.x-era skinnable desktop audio player, written in Rust. Main window,
-equalizer and playlist editor, docked together, pixel for pixel. Load
-any classic `.wsz` skin and it looks the way it always did.
+Ferramp is a from-scratch recreation of the classic 2.x-era skinnable
+desktop audio player, written in Rust. Main window, equalizer and
+playlist editor, docked together. Load any classic `.wsz` skin and it
+looks the way it always did, pixel for pixel.
+
+## New in 0.1.1
+
+- Native Linux packages: .deb, .rpm and AppImage for x86_64 and ARM64,
+  and a one-line installer that checks the release checksums (thanks to
+  @9M2PJU).
+- The three windows now start docked on high-DPI screens. With display
+  scaling they used to open on top of each other.
+- The Linux menu entry starts Ferramp when it is installed into
+  `~/.local`, which is not on the desktop's PATH.
+- `--skin` works after `--render DIR` as well.
 
 ## Downloads
 
