@@ -2627,11 +2627,12 @@ impl ApplicationHandler<UserEvent> for App {
             && t.os.window.id() == id
         {
             if let WindowEvent::RedrawRequested = event {
-                let mut f = Bitmap::new(t.w, t.h, crate::gfx::rgb(255, 255, 225));
-                f.rect_outline(0, 0, t.w, t.h, crate::gfx::rgb(0, 0, 0));
+                let mut chrome = Bitmap::new(t.w, t.h, crate::gfx::rgb(255, 255, 225));
+                chrome.rect_outline(0, 0, t.w, t.h, crate::gfx::rgb(0, 0, 0));
                 let clip = crate::gfx::Rect::new(1, 1, t.w - 2, t.h - 2);
-                self.st.fonts.draw(
-                    &mut f,
+                let mut tq = crate::text::TextQueue::default();
+                tq.draw(
+                    &self.st.fonts,
                     &t.text,
                     3,
                     1,
@@ -2639,10 +2640,12 @@ impl ApplicationHandler<UserEvent> for App {
                     crate::text::Weight::Regular,
                     crate::gfx::rgb(0, 0, 0),
                     clip,
-                    true,
                 );
+                let s = self.ui_scale;
+                let mut f = Bitmap::new(t.w * s, t.h * s, 0);
+                tq.compose(&self.st.fonts, &chrome, &mut f, s);
                 t.os.frame = f;
-                t.os.present(self.ui_scale);
+                t.os.present(1);
             }
             return;
         }
@@ -2651,10 +2654,11 @@ impl ApplicationHandler<UserEvent> for App {
             match event {
                 WindowEvent::RedrawRequested => {
                     let m = &mut self.menus[depth];
-                    let mut f = Bitmap::new(m.level.width, m.level.height, 0);
-                    m.level.render(&self.st.fonts, &mut f);
+                    let s = self.ui_scale;
+                    let mut f = Bitmap::new(m.level.width * s, m.level.height * s, 0);
+                    m.level.render(&self.st.fonts, &mut f, s);
                     m.os.frame = f;
-                    m.os.present(self.ui_scale);
+                    m.os.present(1);
                 }
                 WindowEvent::CursorMoved { position, .. } => {
                     let s = self.ui_scale as f64;
@@ -2694,10 +2698,11 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 WindowEvent::RedrawRequested => {
                     let d = &mut self.dialogs[idx];
-                    let mut f = Bitmap::new(d.dialog.w, d.dialog.h, 0);
-                    d.dialog.render(&self.st.fonts, &mut f);
+                    let s = self.ui_scale;
+                    let mut f = Bitmap::new(d.dialog.w * s, d.dialog.h * s, 0);
+                    d.dialog.render(&self.st.fonts, &mut f, s);
                     d.os.frame = f;
-                    d.os.present(self.ui_scale);
+                    d.os.present(1);
                 }
                 WindowEvent::CursorMoved { position, .. } => {
                     self.dialogs[idx].os.cursor = (position.x, position.y);

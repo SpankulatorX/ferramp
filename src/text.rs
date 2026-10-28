@@ -275,3 +275,73 @@ mod tests {
         assert!(e.ends_with("...") && f.measure(&e, 11.0, Weight::Regular) <= 60);
     }
 }
+
+/// Text queued while a pixel-art frame is drawn at 1x, then drawn on top at
+/// the window's real scale so it stays sharp on high-DPI screens.
+#[derive(Default)]
+pub struct TextQueue {
+    items: Vec<QueuedText>,
+}
+
+struct QueuedText {
+    text: String,
+    x: i32,
+    y: i32,
+    px: f32,
+    weight: Weight,
+    color: u32,
+    clip: Rect,
+}
+
+impl TextQueue {
+    /// Same arguments as [`Fonts::draw`]; returns the text's 1x width.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw(
+        &mut self,
+        fonts: &Fonts,
+        text: &str,
+        x: i32,
+        y: i32,
+        px: f32,
+        weight: Weight,
+        color: u32,
+        clip: Rect,
+    ) -> i32 {
+        self.items.push(QueuedText {
+            text: text.to_string(),
+            x,
+            y,
+            px,
+            weight,
+            color,
+            clip,
+        });
+        fonts.measure(text, px, weight)
+    }
+
+    /// Scales `chrome` up by `scale` into `out`, then draws the queued text.
+    /// At 1x the text keeps the crisp classic look; above that it is smoothed.
+    pub fn compose(&self, fonts: &Fonts, chrome: &Bitmap, out: &mut Bitmap, scale: i32) {
+        let s = scale.max(1);
+        for y in 0..out.h {
+            for x in 0..out.w {
+                out.set(x, y, chrome.get(x / s, y / s));
+            }
+        }
+        for t in &self.items {
+            let c = t.clip;
+            let clip = Rect::new(c.x * s, c.y * s, c.w * s, c.h * s);
+            fonts.draw(
+                out,
+                &t.text,
+                t.x * s,
+                t.y * s,
+                t.px * s as f32,
+                t.weight,
+                t.color,
+                clip,
+                s == 1,
+            );
+        }
+    }
+}

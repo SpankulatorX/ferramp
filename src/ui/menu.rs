@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use crate::gfx::{Bitmap, Rect, rgb};
 use crate::state::State;
-use crate::text::{Fonts, Weight};
+use crate::text::{Fonts, TextQueue, Weight};
 use crate::ui::vis::VisMode;
 use crate::ui::{Cmd, EqLibOp, MenuId, WinKind};
 
@@ -439,7 +439,15 @@ impl MenuLevel {
             .find(|&i| self.item_rect(i).contains(x, y) && !matches!(self.items[i], Item::Sep))
     }
 
-    pub fn render(&self, fonts: &Fonts, out: &mut Bitmap) {
+    /// Draws the menu at `scale`x into `out`, with sharp text on high-DPI screens.
+    pub fn render(&self, fonts: &Fonts, out: &mut Bitmap, scale: i32) {
+        let mut chrome = Bitmap::new(self.width, self.height, FACE);
+        let mut tq = TextQueue::default();
+        self.render_layers(fonts, &mut chrome, &mut tq);
+        tq.compose(fonts, &chrome, out, scale);
+    }
+
+    fn render_layers(&self, fonts: &Fonts, out: &mut Bitmap, tq: &mut TextQueue) {
         let (w, h) = (self.width, self.height);
         out.fill(FACE);
         // Classic raised frame.
@@ -468,12 +476,14 @@ impl MenuLevel {
                 } => {
                     let hot = self.hover == Some(i);
                     self.draw_row(
-                        fonts, out, r, label, hotkey, *checked, *enabled, *default, hot, false,
+                        fonts, out, tq, r, label, hotkey, *checked, *enabled, *default, hot, false,
                     );
                 }
                 Item::Sub { label, enabled, .. } => {
                     let hot = self.hover == Some(i);
-                    self.draw_row(fonts, out, r, label, "", false, *enabled, false, hot, true);
+                    self.draw_row(
+                        fonts, out, tq, r, label, "", false, *enabled, false, hot, true,
+                    );
                 }
             }
         }
@@ -484,6 +494,7 @@ impl MenuLevel {
         &self,
         fonts: &Fonts,
         out: &mut Bitmap,
+        tq: &mut TextQueue,
         r: Rect,
         label: &str,
         hotkey: &str,
@@ -510,8 +521,8 @@ impl MenuLevel {
             Weight::Regular
         };
         let clip = r;
-        let draw = |out: &mut Bitmap, text: &str, x: i32, c: u32, wgt: Weight| {
-            fonts.draw(out, text, x, ty, FONT_PX, wgt, c, clip, true);
+        let mut draw = |text: &str, x: i32, c: u32, wgt: Weight| {
+            tq.draw(fonts, text, x, ty, FONT_PX, wgt, c, clip);
         };
         let (text, mn) = mnemonic(label);
         let underline = |out: &mut Bitmap, x: i32, c: u32| {
@@ -524,16 +535,16 @@ impl MenuLevel {
             }
         };
         if !enabled && !hot {
-            draw(out, &text, r.x + 18, HILITE, weight);
+            draw(&text, r.x + 18, HILITE, weight);
             underline(out, r.x + 18, HILITE);
         }
-        draw(out, &text, r.x + 17, fg, weight);
+        draw(&text, r.x + 17, fg, weight);
         underline(out, r.x + 17, fg);
         if !hotkey.is_empty() {
             let kw = fonts.measure(hotkey, FONT_PX, Weight::Regular);
             let kx = r.x + 17 + self.label_w + 10;
             let kx = kx.max(r.x + r.w - 14 - kw);
-            draw(out, hotkey, kx, fg, Weight::Regular);
+            draw(hotkey, kx, fg, Weight::Regular);
         }
         if checked {
             let cx = r.x + 5;
@@ -607,7 +618,7 @@ mod tests {
         assert_eq!(m.hit(10, 5), Some(0));
         assert_eq!(m.hit(10, 3 + ITEM_H + 2), None);
         assert_eq!(m.hit(10, 3 + ITEM_H + SEP_H + 2), Some(2));
-        let mut b = Bitmap::new(m.width, m.height, 0);
-        m.render(&fonts, &mut b);
+        let mut b = Bitmap::new(m.width * 2, m.height * 2, 0);
+        m.render(&fonts, &mut b, 2);
     }
 }

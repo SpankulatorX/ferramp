@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use crate::gfx::{Bitmap, Rect, rgb};
-use crate::text::{Fonts, Weight};
+use crate::text::{Fonts, TextQueue, Weight};
 use crate::ui::menu::{DARK, FACE, HILITE, SELECT_BG, SHADOW, TEXT};
 use crate::ui::{Cmd, Mods};
 
@@ -1113,7 +1113,16 @@ impl Dialog {
         Outcome::None
     }
 
-    pub fn render(&self, fonts: &Fonts, out: &mut Bitmap) {
+    /// Draws the dialog at `scale`x into `out`. The frame, buttons and images
+    /// keep their pixel look; text is drawn at the full resolution on top.
+    pub fn render(&self, fonts: &Fonts, out: &mut Bitmap, scale: i32) {
+        let mut chrome = Bitmap::new(self.w, self.h, FACE);
+        let mut tq = TextQueue::default();
+        self.render_layers(fonts, &mut chrome, &mut tq);
+        tq.compose(fonts, &chrome, out, scale);
+    }
+
+    fn render_layers(&self, fonts: &Fonts, out: &mut Bitmap, tq: &mut TextQueue) {
         out.fill(FACE);
         for (i, c) in self.controls.iter().enumerate() {
             let focused = self.focus == Some(i);
@@ -1128,8 +1137,8 @@ impl Dialog {
                         let t = fonts.ellipsize(note, FONT, Weight::Regular, inner.w);
                         let tw = fonts.measure(&t, FONT, Weight::Regular);
                         let ty = rect.y + rect.h / 2 - 7;
-                        fonts.draw(
-                            out,
+                        tq.draw(
+                            fonts,
                             &t,
                             rect.x + (rect.w - tw) / 2,
                             ty,
@@ -1137,21 +1146,20 @@ impl Dialog {
                             Weight::Regular,
                             WHITE,
                             inner,
-                            true,
                         );
                     }
                 },
                 Control::Label { text, rect, bold } => {
                     let w = if *bold { Weight::Bold } else { Weight::Regular };
                     let t = fonts.ellipsize(text, FONT, w, rect.w);
-                    fonts.draw(out, &t, rect.x, rect.y, FONT, w, TEXT, *rect, true);
+                    tq.draw(fonts, &t, rect.x, rect.y, FONT, w, TEXT, *rect);
                 }
                 Control::Group { label, rect } => {
                     etched_frame(out, rect.x, rect.y + 6, rect.w, rect.h - 6);
                     let tw = fonts.measure(label, FONT, Weight::Regular);
                     out.fill_rect(rect.x + 7, rect.y, tw + 4, 14, FACE);
-                    fonts.draw(
-                        out,
+                    tq.draw(
+                        fonts,
                         label,
                         rect.x + 9,
                         rect.y,
@@ -1159,7 +1167,6 @@ impl Dialog {
                         Weight::Regular,
                         TEXT,
                         *rect,
-                        true,
                     );
                 }
                 Control::Input { text, cursor, rect } => {
@@ -1169,8 +1176,8 @@ impl Dialog {
                     let before: String = text.chars().take(*cursor).collect();
                     let cx = fonts.measure(&before, FONT, Weight::Regular);
                     let shift = (cx - inner.w + 4).max(0);
-                    fonts.draw(
-                        out,
+                    tq.draw(
+                        fonts,
                         text,
                         inner.x - shift,
                         rect.y + 4,
@@ -1178,7 +1185,6 @@ impl Dialog {
                         Weight::Regular,
                         TEXT,
                         inner,
-                        true,
                     );
                     if focused {
                         out.vline(inner.x - shift + cx, rect.y + 4, 13, TEXT);
@@ -1215,8 +1221,8 @@ impl Dialog {
                             );
                         }
                         let fg = if sel && focused { WHITE } else { TEXT };
-                        fonts.draw(
-                            out,
+                        tq.draw(
+                            fonts,
                             &items[idx],
                             inner.x + 2,
                             y + 1,
@@ -1224,7 +1230,6 @@ impl Dialog {
                             Weight::Regular,
                             fg,
                             inner,
-                            true,
                         );
                     }
                 }
@@ -1238,8 +1243,8 @@ impl Dialog {
                     button(out, *rect, down, *default);
                     let tw = fonts.measure(label, FONT, Weight::Regular);
                     let o = if down { 1 } else { 0 };
-                    fonts.draw(
-                        out,
+                    tq.draw(
+                        fonts,
                         label,
                         rect.x + (rect.w - tw) / 2 + o,
                         rect.y + 5 + o,
@@ -1247,7 +1252,6 @@ impl Dialog {
                         Weight::Regular,
                         TEXT,
                         *rect,
-                        true,
                     );
                 }
                 Control::Check {
@@ -1263,8 +1267,8 @@ impl Dialog {
                             out.vline(b.x + 3 + dx, b.y + 3 + dy, 3, TEXT);
                         }
                     }
-                    fonts.draw(
-                        out,
+                    tq.draw(
+                        fonts,
                         label,
                         rect.x + 18,
                         rect.y + 1,
@@ -1272,7 +1276,6 @@ impl Dialog {
                         Weight::Regular,
                         TEXT,
                         *rect,
-                        true,
                     );
                 }
             }
