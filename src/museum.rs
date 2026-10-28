@@ -144,16 +144,28 @@ pub fn download(e: &Entry) -> Result<PathBuf, String> {
         return Err("bad skin id".into());
     }
     let data = crate::net::get(&format!("{FILES}/skins/{}.wsz", e.md5), 16 << 20)?;
-    // Check that it loads before it lands in the skins folder.
-    let probe = std::env::temp_dir().join(format!("ferramp-{}.wsz", e.md5));
-    std::fs::write(&probe, &data).map_err(|e| e.to_string())?;
+    // Check that it loads before it gets a real name. The probe lives in the
+    // user's own skins folder (not a shared temp dir), is hidden from the
+    // skin list, and is created fresh so an existing file or link is never
+    // written through.
+    let dir = crate::config::skins_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let probe = dir.join(format!(".{}.download", e.md5));
+    let _ = std::fs::remove_file(&probe);
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+            .map_err(|e| e.to_string())?;
+        f.write_all(&data).map_err(|e| e.to_string())?;
+    }
     let loaded = crate::skin::Skin::load(&probe, &crate::skin::Skin::builtin());
     let _ = std::fs::remove_file(&probe);
     if let Err(err) = loaded {
         return Err(format!("not a usable skin ({err})"));
     }
-    let dir = crate::config::skins_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let mut path = dir.join(file_name(e));
     if path.exists() && std::fs::read(&path).ok().as_deref() != Some(&data[..]) {
         let stem = file_name(e).trim_end_matches(".wsz").to_string();
