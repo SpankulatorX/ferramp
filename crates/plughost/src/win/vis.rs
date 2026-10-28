@@ -120,6 +120,62 @@ pub fn stop() {
 
 const N: usize = 1024;
 
+/// The player's own analyzer data, for `IPC_GETSADATAFUNC`: 75 spectrum
+/// bars (0..40) followed by 75 oscilloscope points (signed, about -32..32),
+/// from the newest PCM. All zero when nothing is playing.
+pub fn sa_data(out: &mut [u8]) {
+    out.iter_mut().for_each(|b| *b = 0);
+    let (ch, samples) = {
+        let p = PCM.lock().unwrap();
+        (p.channels.max(1) as usize, p.samples.clone())
+    };
+    let frames = samples.len() / ch;
+    if frames == 0 || out.len() < 150 {
+        return;
+    }
+    let mono: Vec<f32> = (0..frames)
+        .map(|f| {
+            samples[f * ch..f * ch + ch]
+                .iter()
+                .map(|&s| s as f32)
+                .sum::<f32>()
+                / (ch as f32 * 32768.0)
+        })
+        .collect();
+    let mut spec = [0u8; 576];
+    Analyzer::new().spectrum(&mono, &mut spec);
+    // The lower bands carry the music; spread them over 75 bars.
+    for (i, o) in out[..75].iter_mut().enumerate() {
+        let (a, b) = (i * 400 / 75, (i + 1) * 400 / 75);
+        let peak = spec[a..b.max(a + 1)].iter().copied().max().unwrap_or(0);
+        *o = (peak as u32 * 40 / 255) as u8;
+    }
+    let start = frames.saturating_sub(576);
+    for (i, o) in out[75..150].iter_mut().enumerate() {
+        let v = mono.get(start + i * 576 / 75).copied().unwrap_or(0.0);
+        *o = ((v * 32.0).clamp(-127.0, 127.0) as i8) as u8;
+    }
+}
+
+/// `IPC_GETVUDATAFUNC`: the level of a channel, 0..255.
+pub fn vu(channel: usize) -> Option<u8> {
+    let p = PCM.lock().unwrap();
+    let ch = p.channels.max(1) as usize;
+    if channel >= ch.max(2) {
+        return None;
+    }
+    let c = channel.min(ch - 1);
+    let tail = p.samples.len().saturating_sub(576 * ch);
+    let peak = p.samples[tail..]
+        .iter()
+        .skip(c)
+        .step_by(ch)
+        .map(|s| s.unsigned_abs())
+        .max()
+        .unwrap_or(0);
+    Some((peak as u32 * 255 / 32768) as u8)
+}
+
 /// A radix-2 FFT for the 576-band spectrum the modules expect.
 struct Analyzer {
     window: Vec<f32>,

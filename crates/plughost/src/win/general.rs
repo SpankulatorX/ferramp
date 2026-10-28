@@ -13,8 +13,9 @@ use ferramp_winampabi::{HWND, WM_WA_IPC, cmd, embedWindowState, ipc};
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, RegisterClassW, SendMessageW, WNDCLASSW, WS_OVERLAPPEDWINDOW,
-    WS_VISIBLE,
+    CreateWindowExW, DefWindowProcW, GW_CHILD, GetClientRect, GetWindow, KillTimer, MoveWindow,
+    RegisterClassW, SW_HIDE, SendMessageW, SetTimer, ShowWindow, WM_CLOSE, WM_SHOWWINDOW, WM_SIZE,
+    WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
 
 use super::text::{self, from_ansi_ptr, from_wide_ptr, wide};
@@ -125,8 +126,18 @@ fn cmd_event(c: Command) {
     event(FromHost::Command(c));
 }
 
+/// IPC numbers already noted in the log (each is noted once).
+static SEEN_IPC: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+
 /// Answers `SendMessage(player, WM_WA_IPC, w, l)`.
 pub fn ipc(h: HWND, w: WPARAM, l: LPARAM) -> LRESULT {
+    {
+        let mut seen = SEEN_IPC.lock().unwrap();
+        if !seen.contains(&l) {
+            seen.push(l);
+            super::log(format!("ipc {l} (wparam {w:#x})"));
+        }
+    }
     let wi = w as isize;
     match l {
         ipc::GETVERSION => 0x5066,
@@ -270,9 +281,33 @@ pub fn ipc(h: HWND, w: WPARAM, l: LPARAM) -> LRESULT {
         ipc::IS_PLAYING_VIDEO => 0,
         ipc::GETWND | ipc::ISWNDVISIBLE | ipc::ISMAINWNDVISIBLE => 0,
         ipc::GETDIALOGBOXPARENT => h as isize,
+        // With a window state: create the frame now and return it.
+        ipc::GET_EMBEDIF if w != 0 => {
+            (unsafe { embed_window(w as *mut embedWindowState) }) as isize
+        }
         ipc::GET_EMBEDIF => embed_window as *const () as isize,
+        ipc::GET_HMENU => super::menu::get(w),
+        ipc::ADJUST_OPTIONSMENUPOS => super::menu::adjust(0, w as isize),
+        ipc::ADJUST_FFWINDOWSMENUPOS => super::menu::adjust(1, w as isize),
+        ipc::ADJUST_FFOPTIONSMENUPOS => super::menu::adjust(2, w as isize),
+        ipc::REGISTER_LOWORD_COMMAND => super::menu::register_ids(w),
+        ipc::INITIAL_SHOW_STATE => 1, // SW_SHOWNORMAL
+        // The analyzer data the player's own display shows. Plugins call
+        // these without checking for null.
+        ipc::GETSADATAFUNC => {
+            want_pcm();
+            match w {
+                0 => sa_get as *const () as isize,
+                1 => sa_setreq as *const () as isize,
+                _ => sa_get_into as *const () as isize,
+            }
+        }
+        ipc::GETVUDATAFUNC => {
+            want_pcm();
+            vu_get as *const () as isize
+        }
         // No Wasabi service layer; plugins that need it degrade or refuse.
-        ipc::GET_API_SERVICE => 0,
+        ipc::GET_API_SERVICE => super::wasabi::service(),
         ipc::GET_BASIC_FILE_INFO => basic_file_info(w, false),
         ipc::GET_BASIC_FILE_INFOW => basic_file_info(w, true),
         ipc::GET_EXTENDED_FILE_INFO => extended_file_info(w),
@@ -293,6 +328,40 @@ pub fn ipc(h: HWND, w: WPARAM, l: LPARAM) -> LRESULT {
         | ipc::SETDIALOGBOXPARENT
         | ipc::ENABLEDISABLE_ALL_WINDOWS => 0,
         _ => 0,
+    }
+}
+
+/// Tells Ferramp once that a plugin wants the sound for analyzer data.
+fn want_pcm() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| event(FromHost::WantPcm));
+}
+
+static mut SA_BUF: [u8; 158] = [0; 158];
+
+unsafe extern "C" fn sa_get() -> *mut c_char {
+    // The buffer outlives the call, as the player's did; it is only ever
+    // reached through this raw pointer.
+    let p = (&raw mut SA_BUF).cast::<u8>();
+    super::vis::sa_data(unsafe { std::slice::from_raw_parts_mut(p, 158) });
+    p as *mut c_char
+}
+
+unsafe extern "C" fn sa_get_into(data: *mut c_char) -> *mut c_char {
+    if data.is_null() {
+        return unsafe { sa_get() };
+    }
+    let buf = unsafe { std::slice::from_raw_parts_mut(data as *mut u8, 150) };
+    super::vis::sa_data(buf);
+    data
+}
+
+unsafe extern "C" fn sa_setreq(_want: c_int) {}
+
+unsafe extern "C" fn vu_get(channel: c_int) -> c_int {
+    match usize::try_from(channel).ok().and_then(super::vis::vu) {
+        Some(v) => v as c_int,
+        None => -1,
     }
 }
 
@@ -497,8 +566,52 @@ pub fn notify(h: HWND) {
 // ----------------------------------------------------------------------
 // Frame windows for plugins that ask to be embedded in the player
 
+/// The frame around a plugin's window: keeps the plugin's child window
+/// filling it, and passes the close button on to it, as the player did.
 unsafe extern "system" fn frame_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
-    unsafe { DefWindowProcW(h, msg, w, l) }
+    unsafe {
+        match msg {
+            WM_SIZE | WM_SHOWWINDOW => {
+                fit_child(h);
+                if msg == WM_SIZE {
+                    0
+                } else {
+                    DefWindowProcW(h, msg, w, l)
+                }
+            }
+            // The plugin creates its window inside the frame right after
+            // asking for it; size it before it first draws.
+            WM_TIMER if w == FIT_TIMER => {
+                KillTimer(h, FIT_TIMER);
+                fit_child(h);
+                0
+            }
+            WM_CLOSE => {
+                let child = GetWindow(h, GW_CHILD);
+                if child.is_null() {
+                    ShowWindow(h, SW_HIDE);
+                } else {
+                    SendMessageW(child, WM_CLOSE, 0, 0);
+                }
+                0
+            }
+            _ => DefWindowProcW(h, msg, w, l),
+        }
+    }
+}
+
+const FIT_TIMER: usize = 1;
+
+/// Makes the plugin's window fill the frame.
+unsafe fn fit_child(frame: HWND) {
+    unsafe {
+        let child = GetWindow(frame, GW_CHILD);
+        if !child.is_null() {
+            let mut r = std::mem::zeroed();
+            GetClientRect(frame, &mut r);
+            MoveWindow(child, 0, 0, r.right, r.bottom, 1);
+        }
+    }
 }
 
 unsafe extern "C" fn embed_window(state: *mut embedWindowState) -> HWND {
@@ -523,7 +636,8 @@ unsafe extern "C" fn embed_window(state: *mut embedWindowState) -> HWND {
             0,
             class.as_ptr(),
             wide("Ferramp").as_ptr(),
-            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            // Hidden until the plugin shows it.
+            WS_OVERLAPPEDWINDOW,
             x,
             y,
             w,
@@ -534,6 +648,7 @@ unsafe extern "C" fn embed_window(state: *mut embedWindowState) -> HWND {
             std::ptr::null(),
         );
         (*state).me = hwnd;
+        SetTimer(hwnd, FIT_TIMER, 1, None);
         hwnd
     }
 }

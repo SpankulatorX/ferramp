@@ -113,6 +113,16 @@ pub struct PlayerState {
     pub eq: Vec<u8>,
 }
 
+/// A menu item a general plugin added to the player's menus.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct MenuEntry {
+    /// The command id the plugin listens for.
+    pub id: u32,
+    pub label: String,
+    pub checked: bool,
+    pub enabled: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct PlEntry {
     pub file: String,
@@ -242,6 +252,12 @@ pub enum ToHost {
     OutVolume(i32),
     OutClose,
     Shutdown,
+    /// Which menu items the general plugins have added.
+    MenuQuery,
+    /// The user picked a plugin's menu item.
+    MenuCommand {
+        id: u32,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -294,6 +310,11 @@ pub enum FromHost {
     VisClosed,
     Command(Command),
     Log(String),
+    /// Reply to `MenuQuery`.
+    Menu(Vec<MenuEntry>),
+    /// A plugin asked for analyzer data: send the sound being played
+    /// (`VisPcm`) even when no visualization plugin runs.
+    WantPcm,
 }
 
 // ----------------------------------------------------------------------
@@ -484,6 +505,12 @@ wire_struct!(PlayerState {
     channels,
     eq,
 });
+wire_struct!(MenuEntry {
+    id,
+    label,
+    checked,
+    enabled
+});
 wire_struct!(PlEntry {
     file,
     title,
@@ -573,6 +600,8 @@ wire_enum!(ToHost {
     25 => OutVolume(a),
     26 => OutClose,
     27 => Shutdown,
+    28 => MenuQuery,
+    29 => MenuCommand { id },
 });
 
 wire_enum!(FromHost {
@@ -594,6 +623,8 @@ wire_enum!(FromHost {
     15 => VisClosed,
     16 => Command(a),
     17 => Log(a),
+    18 => Menu(a),
+    19 => WantPcm,
 });
 
 /// Encodes one frame.
@@ -665,6 +696,13 @@ mod tests {
             ..Default::default()
         }));
         roundtrip(ToHost::Shutdown);
+        roundtrip(ToHost::MenuCommand { id: 40123 });
+        roundtrip(FromHost::Menu(vec![MenuEntry {
+            id: 40123,
+            label: "Big Clock\tAlt+B".into(),
+            checked: true,
+            enabled: true,
+        }]));
         roundtrip(FromHost::Plugins(vec![PluginInfo {
             id: 3,
             file: "in_x.dll".into(),

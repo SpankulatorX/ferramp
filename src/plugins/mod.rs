@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use ferramp_plugproto::{
-    Command, FileInfo, FromHost, Kind, PlEntry, PlayerState, PluginInfo, ToHost,
+    Command, FileInfo, FromHost, Kind, MenuEntry, PlEntry, PlayerState, PluginInfo, ToHost,
 };
 
 use host::{Arch, Host, HostError};
@@ -80,6 +80,8 @@ struct Hub {
     /// When the host last reported loading progress, and the plugin it was
     /// loading then (`None` once it finished).
     progress: Mutex<(Instant, Option<String>)>,
+    /// Hosts where a general plugin asked for analyzer data.
+    pcm_for: Mutex<Vec<Arch>>,
 }
 
 pub struct Plugins {
@@ -130,6 +132,7 @@ impl Plugins {
                 wake,
                 log_dir,
                 progress: Mutex::new((Instant::now(), None)),
+                pcm_for: Mutex::new(Vec::new()),
             }),
             skip: Mutex::new(HashMap::new()),
             dsp: Mutex::new(None),
@@ -216,14 +219,15 @@ impl Plugins {
                         }
                         break;
                     }
-                    Err(ScanError::Hung(file)) if attempts < 8 => {
+                    Err(e) if attempts < 8 && e.blamed().is_some() => {
                         if let Some(h) = self.hosts.lock().unwrap().remove(&arch) {
                             h.kill();
                         }
-                        self.skip.lock().unwrap().insert(
-                            file.to_lowercase(),
-                            "stopped responding while loading".into(),
-                        );
+                        let (file, why) = e.blamed().unwrap();
+                        self.skip
+                            .lock()
+                            .unwrap()
+                            .insert(file.to_lowercase(), why.into());
                     }
                     Err(e) => {
                         errors.push(e.to_string());
@@ -268,7 +272,7 @@ impl Plugins {
                     // It crashed: blame the plugin it was loading.
                     let (_, loading) = self.hub.progress.lock().unwrap().clone();
                     return Err(match loading {
-                        Some(f) => ScanError::Hung(f),
+                        Some(f) => ScanError::Crashed(f),
                         None => ScanError::Host(HostError::Dead),
                     });
                 }
@@ -322,6 +326,13 @@ impl Plugins {
             .name("plughost-events".into())
             .spawn(move || {
                 for ev in rx {
+                    if matches!(ev, FromHost::WantPcm) {
+                        let mut p = hub.pcm_for.lock().unwrap();
+                        if !p.contains(&arch) {
+                            p.push(arch);
+                        }
+                        continue;
+                    }
                     dispatch(ev, &hub);
                 }
                 // The host is gone: end every stream that was waiting on it.
@@ -521,6 +532,40 @@ impl Plugins {
         }
     }
 
+    /// The menu items general plugins added, with the host each lives in.
+    pub fn menu_entries(&self) -> Vec<(Arch, MenuEntry)> {
+        let with_general: Vec<Arch> = self
+            .of_kind(Kind::General)
+            .iter()
+            .filter(|p| p.info.error.is_none())
+            .map(|p| p.arch)
+            .collect();
+        let hosts: Vec<(Arch, Arc<Host>)> = self
+            .hosts
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(a, _)| with_general.contains(a))
+            .map(|(a, h)| (*a, h.clone()))
+            .collect();
+        let mut out = Vec::new();
+        for (arch, h) in hosts {
+            if let Ok(FromHost::Menu(items)) =
+                h.request(&ToHost::MenuQuery, Duration::from_millis(300))
+            {
+                out.extend(items.into_iter().map(|e| (arch, e)));
+            }
+        }
+        out
+    }
+
+    /// Picks a plugin's menu item.
+    pub fn menu_command(&self, arch: Arch, id: u32) {
+        if let Some(h) = self.host(arch) {
+            let _ = h.send(&ToHost::MenuCommand { id });
+        }
+    }
+
     pub fn about(&self, p: &Plugin, module: u32) {
         if let Some(h) = self.host(p.arch) {
             let _ = h.send(&ToHost::About {
@@ -694,19 +739,28 @@ impl Plugins {
         self.hub.vis_open.load(Ordering::SeqCst)
     }
 
+    /// Whether a host wants the sound being played: for a running
+    /// visualization plugin, or for a plugin reading analyzer data.
+    pub fn wants_pcm(&self) -> bool {
+        self.vis_running() || !self.hub.pcm_for.lock().unwrap().is_empty()
+    }
+
     pub fn vis_pcm(&self, rate: u32, channels: u32, samples: Vec<i16>) {
-        if !self.vis_running() {
-            return;
-        }
-        let a = *self.vis.lock().unwrap();
-        if let Some(a) = a
-            && let Some(h) = self.hosts.lock().unwrap().get(&a).cloned()
+        let mut targets = self.hub.pcm_for.lock().unwrap().clone();
+        if self.vis_running()
+            && let Some(a) = *self.vis.lock().unwrap()
+            && !targets.contains(&a)
         {
-            let _ = h.send(&ToHost::VisPcm {
-                rate,
-                channels,
-                samples,
-            });
+            targets.push(a);
+        }
+        for a in targets {
+            if let Some(h) = self.hosts.lock().unwrap().get(&a).cloned() {
+                let _ = h.send(&ToHost::VisPcm {
+                    rate,
+                    channels,
+                    samples: samples.clone(),
+                });
+            }
         }
     }
 
@@ -821,16 +875,32 @@ const LOAD_TIMEOUT: Duration = Duration::from_secs(25);
 
 #[derive(Debug)]
 enum ScanError {
-    /// The host stopped responding (or crashed) while loading this file.
+    /// The host stopped responding while loading this file.
     Hung(String),
+    /// The host crashed while loading this file.
+    Crashed(String),
     Host(HostError),
+}
+
+impl ScanError {
+    /// The plugin that took the host down, and how.
+    fn blamed(&self) -> Option<(&str, &'static str)> {
+        match self {
+            ScanError::Hung(f) => Some((f, "stopped responding while loading")),
+            ScanError::Crashed(f) => Some((f, "crashed while loading")),
+            ScanError::Host(_) => None,
+        }
+    }
 }
 
 impl std::fmt::Display for ScanError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ScanError::Hung(p) => write!(f, "{p} stopped responding while loading"),
             ScanError::Host(e) => write!(f, "{e}"),
+            _ => {
+                let (p, why) = self.blamed().unwrap();
+                write!(f, "{p} {why}")
+            }
         }
     }
 }

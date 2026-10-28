@@ -10,10 +10,12 @@
 mod dsp;
 mod general;
 mod input;
+mod menu;
 mod output;
 mod registry;
 pub mod text;
 mod vis;
+mod wasabi;
 
 use std::collections::VecDeque;
 use std::fs::File;
@@ -367,6 +369,11 @@ fn handle(id: u32, msg: ToHost) {
         ToHost::About { plugin, module } => {
             reply(id, FromHost::Done);
             registry::about(plugin, module);
+        }
+        ToHost::MenuQuery => reply(id, FromHost::Menu(menu::entries(main_hwnd()))),
+        ToHost::MenuCommand { id: cmd } => {
+            reply(id, FromHost::Done);
+            menu::command(main_hwnd(), cmd);
         }
         ToHost::IsOurFile { path } => reply(id, FromHost::Plugin(registry::is_our_file(&path))),
         ToHost::FileInfo { plugin, path } => match registry::file_info(plugin, &path) {

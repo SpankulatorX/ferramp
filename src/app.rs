@@ -193,6 +193,8 @@ pub struct App {
     plug: PlugSync,
     /// The plugin dialog's rows: (file name, module).
     plugin_rows: Vec<(String, u32)>,
+    /// What the plugin items in the open main menu stand for.
+    plugin_menu: Vec<(crate::plugins::host::Arch, u32)>,
     tip: Option<Tooltip>,
     hover_tip: Option<(WinKind, String, Instant)>,
     next_frame: Instant,
@@ -255,6 +257,7 @@ impl App {
             plugins_ready: false,
             plug: PlugSync::default(),
             plugin_rows: Vec::new(),
+            plugin_menu: Vec::new(),
             tip: None,
             hover_tip: None,
             next_frame: Instant::now(),
@@ -618,6 +621,9 @@ impl App {
             self.settings.set_bool("classic_offered", true);
             self.open_classic_skin(el);
         }
+        // Plugins first: a file given on the command line may need one, and
+        // the decoder waits for them only once loading has begun.
+        self.start_plugins();
         // Restore the playlist, then handle files given on the command line.
         let files = std::mem::take(&mut self.initial_files);
         let saved = config::config_dir().join("ferramp.m3u");
@@ -634,7 +640,6 @@ impl App {
             let paths: Vec<PathBuf> = files.iter().map(PathBuf::from).collect();
             self.open_paths(paths, true);
         }
-        self.start_plugins();
         self.created = true;
     }
 
@@ -1235,12 +1240,22 @@ impl App {
         self.close_menus();
         let skins = list_skins();
         let bookmarks: Vec<String> = self.bookmarks.iter().map(|b| b.0.clone()).collect();
+        let entries = match (&self.plugins, id) {
+            (Some(sys), MenuId::Main) if self.plugins_ready => sys.menu_entries(),
+            _ => Vec::new(),
+        };
+        let plugin_items: Vec<(String, bool, bool)> = entries
+            .iter()
+            .map(|(_, e)| (e.label.clone(), e.checked, e.enabled))
+            .collect();
+        self.plugin_menu = entries.iter().map(|(a, e)| (*a, e.id)).collect();
         let items = menu::build(
             id,
             &MenuContext {
                 state: &self.st,
                 skins: &skins,
                 bookmarks: &bookmarks,
+                plugin_items: &plugin_items,
             },
         );
         let g = *self.st.geom(owner);
@@ -2449,6 +2464,11 @@ impl App {
                 self.open_dialog(el, d);
             }
             Cmd::PluginsDialog => self.open_plugins_dialog(el),
+            Cmd::PluginMenu(i) => {
+                if let (Some(sys), Some(&(arch, id))) = (&self.plugins, self.plugin_menu.get(i)) {
+                    sys.menu_command(arch, id);
+                }
+            }
             Cmd::VisPluginConfig => {
                 if let Some((p, m)) = self.selected_vis_plugin() {
                     if let Some(sys) = &self.plugins {
@@ -3756,21 +3776,20 @@ impl App {
         {
             self.save_plugin_noinfo();
         }
-        if sys.vis_running() {
-            if self.plug.next_vis.is_none_or(|t| now >= t) {
-                self.plug.next_vis = Some(now + Duration::from_millis(20));
-                let mut buf = Vec::new();
-                self.st.engine.vis_samples(&mut buf);
-                let samples: Vec<i16> = buf
-                    .iter()
-                    .rev()
-                    .take(1152)
-                    .rev()
-                    .map(|v| (v.clamp(-1.0, 1.0) * 32767.0) as i16)
-                    .collect();
-                sys.vis_pcm(self.st.engine.out_rate(), 1, samples);
-            }
-        } else if self.plug.vis_was_running {
+        if sys.wants_pcm() && self.plug.next_vis.is_none_or(|t| now >= t) {
+            self.plug.next_vis = Some(now + Duration::from_millis(20));
+            let mut buf = Vec::new();
+            self.st.engine.vis_samples(&mut buf);
+            let samples: Vec<i16> = buf
+                .iter()
+                .rev()
+                .take(1152)
+                .rev()
+                .map(|v| (v.clamp(-1.0, 1.0) * 32767.0) as i16)
+                .collect();
+            sys.vis_pcm(self.st.engine.out_rate(), 1, samples);
+        }
+        if !sys.vis_running() && self.plug.vis_was_running {
             // The plugin closed its window itself.
             self.plug.vis_was_running = false;
             self.settings.set_bool("plugin_vis_on", false);

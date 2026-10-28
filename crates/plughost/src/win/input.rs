@@ -37,6 +37,8 @@ struct Pull {
 struct Push {
     stream: Arc<Stream>,
     plugin: u32,
+    /// The file, for its length when the plugin does not know it yet.
+    path: String,
     module: Ptr<In_Module>,
     bytes_per_ms: AtomicU64,
     written: AtomicU64,
@@ -212,6 +214,7 @@ fn play_classic(s: Arc<Stream>, plugin: u32, inp: Input, win: &str) {
     *PUSH.lock().unwrap() = Some(Arc::new(Push {
         stream: s.clone(),
         plugin,
+        path: win.to_string(),
         module: m,
         bytes_per_ms: AtomicU64::new(176),
         written: AtomicU64::new(0),
@@ -412,10 +415,17 @@ unsafe extern "C" fn fo_open(rate: c_int, nch: c_int, bps: c_int, _: c_int, _: c
     );
     p.written.store(0, Ordering::SeqCst);
     p.base_ms.store(0, Ordering::SeqCst);
-    let (length_ms, seekable) = unsafe {
+    let (mut length_ms, seekable) = unsafe {
         let m = &*p.module.0;
         (m.GetLength.map(|f| f()).unwrap_or(-1), m.is_seekable != 0)
     };
+    // Many plugins open the output before they know the length; their
+    // file information does.
+    if length_ms <= 0 {
+        length_ms = registry::file_info(p.plugin, &p.path)
+            .map(|i| i.length_ms)
+            .unwrap_or(-1);
+    }
     event(FromHost::Opened {
         stream: p.stream.id,
         format: StreamFormat {
@@ -427,7 +437,6 @@ unsafe extern "C" fn fo_open(rate: c_int, nch: c_int, bps: c_int, _: c_int, _: c
             kbps: 0,
         },
     });
-    let _ = p.plugin;
     0
 }
 unsafe extern "C" fn fo_close() {}

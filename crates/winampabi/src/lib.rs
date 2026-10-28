@@ -312,7 +312,14 @@ pub mod ipc {
     pub const ENABLEDISABLE_ALL_WINDOWS: isize = 259;
     pub const GETWND: isize = 260;
     pub const ISWNDVISIBLE: isize = 261;
+    pub const ADJUST_OPTIONSMENUPOS: isize = 280;
     pub const GET_HMENU: isize = 281;
+    pub const ADJUST_FFWINDOWSMENUPOS: isize = 606;
+    pub const ADJUST_FFOPTIONSMENUPOS: isize = 609;
+    pub const INITIAL_SHOW_STATE: isize = 657;
+    pub const GETSADATAFUNC: isize = 800;
+    pub const GETVUDATAFUNC: isize = 801;
+    pub const REGISTER_LOWORD_COMMAND: isize = 3019;
     pub const GET_EXTENDED_FILE_INFO: isize = 290;
     pub const GET_BASIC_FILE_INFO: isize = 291;
     pub const GET_EXTLIST: isize = 292;

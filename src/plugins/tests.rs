@@ -274,6 +274,9 @@ fn all_plugin_kinds_end_to_end() {
         "{glog}"
     );
     assert!(glog.contains("title=Song B"), "{glog}");
+    // The later service layer: the application service answers.
+    assert!(glog.contains("service app=Winamp settings="), "{glog}");
+    assert!(!glog.contains("settings=\n"), "{glog}");
     assert!(
         glog.contains("file=Z:\\music\\b.mp3") || cfg!(windows),
         "{glog}"
@@ -284,6 +287,17 @@ fn all_plugin_kinds_end_to_end() {
     );
     wait_for("Next command", Duration::from_secs(5), || {
         sys.take_commands().contains(&Command::Next)
+    });
+    // The general plugin's menu item shows up, and picking it reaches it.
+    let entries = sys.menu_entries();
+    let (arch, item) = entries
+        .iter()
+        .find(|(_, e)| e.label == "Test window\tAlt+T")
+        .unwrap_or_else(|| panic!("menu entries: {entries:?}"));
+    assert!(item.checked && item.enabled, "{item:?}");
+    sys.menu_command(*arch, item.id);
+    wait_for("the menu command", Duration::from_secs(5), || {
+        read_log(&logs, "gen.log").contains("menu command")
     });
 
     // Output: the engine plays a track through the test output plugin.

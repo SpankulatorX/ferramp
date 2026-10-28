@@ -144,6 +144,8 @@ pub enum Cmd {
     VisPluginConfig,
     PluginSelect(usize),
     PluginAction(PluginAction, usize),
+    /// A menu item a general plugin added (index into the current list).
+    PluginMenu(usize),
     AddBookmark,
     BookmarkSelected,
     EditBookmarks,

@@ -119,22 +119,29 @@ formats such as Opus, tracker modules, SID, VGM and game audio), output
   a fallback when the built-in decoder cannot read a file. They also
   supply titles and durations for the playlist.
 - General purpose plug-ins see the player state and playlist and can
-  control playback, as they did in the original player.
+  control playback, as they did in the original player. Items they add
+  to the player's menu (such as Big Clock's show and hide) appear in
+  Ferramp's main menu, below the window toggles. Their own windows,
+  analyzer data and the later service layer some of them use (language,
+  memory and application services) are provided too.
 - Plug-ins run in a separate program, `ferramp-plughost`, which ships
   with Ferramp. It is a Windows program: Windows runs it directly, Linux
   and macOS run it under Wine (`apt install wine`, `dnf install wine`,
   `pacman -S wine`, or `brew install --cask wine-stable`). A plug-in that
   crashes or hangs only takes the helper down; Ferramp restarts it, and
-  a plug-in that hangs while loading is left out and marked in the list.
-  A plug-in that shows a dialog while loading is given time for you to
-  answer it.
+  a plug-in that hangs or crashes while loading is left out and marked
+  in the list. A plug-in that shows a dialog while loading is given time
+  for you to answer it. When a plug-in cannot load because a library it
+  needs is missing, the list names that library.
 
-Tested so far: files played through `in_opus`, `in_openmpt`, `in_vgm`
-and `in_sidplay2`; `dsp_bs2b` and `dsp_qat` started and configured;
-`in_vgmstream`, `in_msx`, `in_mad`, `out_wave_gpl`, `out_yasapi-nt`,
-`vis_geis` and `gen_discord_rpc` loaded. Every plug-in kind is also
-tested end to end against Ferramp's own test plug-ins, on Windows and
-under Wine.
+Tested so far, under Wine on Linux: files played through `in_opus`,
+`in_openmpt`, `in_vgm`, `in_sidplay2` and `in_adlib`; `dsp_bs2b` and
+`dsp_qat` started and configured; `gen_bigclock` shown, following
+playback and toggled from Ferramp's menu; `in_vgmstream`, `in_msx`,
+`in_mad`, `out_wave_gpl`, `out_yasapi-nt`, `vis_geis`, `vis_plainbar` and
+`gen_discord_rpc` loaded. Plug-ins built only for WACUP (such as its
+`gen_win7shell`) do not load. Every plug-in kind is also tested end to
+end against Ferramp's own test plug-ins, on Windows and under Wine.
 
 ## Keyboard
 

@@ -74,6 +74,9 @@ pub struct MenuContext<'a> {
     pub state: &'a State,
     pub skins: &'a [PathBuf],
     pub bookmarks: &'a [String],
+    /// Items general plugins added to the player's menu: label (a tab
+    /// separates the shortcut), checked, enabled.
+    pub plugin_items: &'a [(String, bool, bool)],
 }
 
 fn disabled(mut it: Item) -> Item {
@@ -131,6 +134,19 @@ pub fn build(id: MenuId, ctx: &MenuContext) -> Vec<Item> {
                 Cmd::ToggleWindow(WinKind::Eq),
                 st.eqw.visible,
             ),
+        ]
+        .into_iter()
+        .chain(
+            ctx.plugin_items
+                .iter()
+                .enumerate()
+                .map(|(i, (label, on, enabled))| {
+                    let (label, hotkey) = label.split_once('\t').unwrap_or((label, ""));
+                    let it = check(label, hotkey, Cmd::PluginMenu(i), *on);
+                    if *enabled { it } else { disabled(it) }
+                }),
+        )
+        .chain([
             Item::Sep,
             sub("&Options", build(MenuId::Options, ctx)),
             sub("Play&back", build(MenuId::Playback, ctx)),
@@ -138,7 +154,8 @@ pub fn build(id: MenuId, ctx: &MenuContext) -> Vec<Item> {
             sub("&Skins", build(MenuId::Skins, ctx)),
             Item::Sep,
             act("E&xit", "", Cmd::Exit),
-        ],
+        ])
+        .collect(),
         MenuId::SongTitle => vec![
             act("&File info", "Alt+3 or Dblclick", Cmd::FileInfo),
             act("&Jump to file...", "J", Cmd::JumpToFile),

@@ -15,7 +15,8 @@ use std::time::Duration;
 use ferramp_winampabi::*;
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallWindowProcW, KillTimer, PostMessageW, SendMessageW, SetTimer, WM_COMMAND, WNDPROC,
+    AppendMenuW, CallWindowProcW, HMENU, KillTimer, MF_CHECKED, MF_STRING, PostMessageW,
+    SendMessageW, SetTimer, WM_COMMAND, WNDPROC,
 };
 
 use crate::{parse_tone, tone_sample};
@@ -736,7 +737,14 @@ unsafe fn set_wndproc(h: HWND, p: isize) -> isize {
     unsafe { SetWindowLongW(h, GWL_WNDPROC, p as i32) as isize }
 }
 
+/// The command id of the item the general plugin adds to the player menu.
+static MENU_ID: AtomicI32 = AtomicI32::new(0);
+
 unsafe extern "system" fn gen_wndproc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+    if msg == WM_COMMAND && (w & 0xFFFF) as i32 == MENU_ID.load(Ordering::SeqCst) {
+        log("gen.log", "menu command");
+        return 0;
+    }
     if msg == WM_WA_IPC {
         if l == ipc::PLAYING_FILE {
             log(
@@ -788,6 +796,71 @@ unsafe extern "system" fn gen_tick(h: HWND, _: u32, _: usize, _: u32) {
     );
 }
 
+/// A service object: a C++ object whose first virtual method is
+/// `int _dispatch(int msg, void *retval, void **params, int nparam)`.
+#[repr(C)]
+struct Dispatchable {
+    vtbl: *const Dispatch,
+}
+
+#[cfg(target_arch = "x86")]
+type Dispatch = unsafe extern "thiscall" fn(
+    *mut Dispatchable,
+    c_int,
+    *mut c_void,
+    *mut *mut c_void,
+    c_int,
+) -> c_int;
+#[cfg(not(target_arch = "x86"))]
+type Dispatch =
+    unsafe extern "C" fn(*mut Dispatchable, c_int, *mut c_void, *mut *mut c_void, c_int) -> c_int;
+
+/// Calls `obj->_dispatch(msg, &ret, params)` and returns `ret`.
+unsafe fn call<R: Default>(obj: *mut Dispatchable, msg: c_int, params: &mut [*mut c_void]) -> R {
+    let mut ret = R::default();
+    if obj.is_null() {
+        return ret;
+    }
+    let f = unsafe { *(*obj).vtbl };
+    let n = params.len() as c_int;
+    unsafe { f(obj, msg, (&raw mut ret).cast(), params.as_mut_ptr(), n) };
+    ret
+}
+
+/// Asks the player's service layer for the application service, the way
+/// later plugins do, and logs what it says.
+unsafe fn probe_services(h: HWND) {
+    // {23B96771-09D7-46d3-9AE2-20DCEA6C86EA}
+    let mut app_guid: [u8; 16] = [
+        0x71, 0x67, 0xb9, 0x23, 0xd7, 0x09, 0xd3, 0x46, 0x9a, 0xe2, 0x20, 0xdc, 0xea, 0x6c, 0x86,
+        0xea,
+    ];
+    let svc = unsafe { SendMessageW(h, WM_WA_IPC, 0, ipc::GET_API_SERVICE) } as *mut Dispatchable;
+    let factory: usize = unsafe { call(svc, 50, &mut [(&raw mut app_guid).cast()]) };
+    let mut lock: c_int = 1;
+    let app: usize = unsafe {
+        call(
+            factory as *mut Dispatchable,
+            300,
+            &mut [(&raw mut lock).cast()],
+        )
+    };
+    let name: usize = unsafe { call(app as *mut Dispatchable, 10, &mut []) };
+    let settings: usize = unsafe { call(app as *mut Dispatchable, 120, &mut []) };
+    let wide = |p: usize| {
+        if p == 0 {
+            return String::new();
+        }
+        let p = p as *const u16;
+        let len = (0..).take_while(|&i| unsafe { *p.add(i) } != 0).count();
+        String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(p, len) })
+    };
+    log(
+        "gen.log",
+        &format!("service app={} settings={}", wide(name), wide(settings)),
+    );
+}
+
 unsafe extern "C" fn gen_init() -> c_int {
     let h = unsafe { (*(&raw const GEN)).hwndParent };
     let ini = unsafe { cstr(SendMessageW(h, WM_WA_IPC, 0, ipc::GETINIFILE) as *const c_void) };
@@ -795,6 +868,15 @@ unsafe extern "C" fn gen_init() -> c_int {
         "gen.log",
         &format!("init parent={} ini={ini}", !h.is_null()),
     );
+    unsafe { probe_services(h) };
+    // A checked item in the main popup menu, after the playlist editor.
+    unsafe {
+        let id = SendMessageW(h, WM_WA_IPC, 0, ipc::REGISTER_LOWORD_COMMAND) as i32;
+        MENU_ID.store(id, Ordering::SeqCst);
+        let menu = SendMessageW(h, WM_WA_IPC, 0, ipc::GET_HMENU) as HMENU;
+        let label: Vec<u16> = "Test window\tAlt+T\0".encode_utf16().collect();
+        AppendMenuW(menu, MF_STRING | MF_CHECKED, id as usize, label.as_ptr());
+    }
     let old = unsafe { set_wndproc(h, gen_wndproc as *const () as isize) };
     OLD_PROC.store(old as u64, Ordering::SeqCst);
     unsafe { SetTimer(h, TIMER_ID, 300, Some(gen_tick)) };

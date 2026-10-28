@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 use ferramp_plugproto::{FileInfo, Kind, PluginInfo};
 use ferramp_winampabi::*;
-use windows_sys::Win32::Foundation::HMODULE;
+use windows_sys::Win32::Foundation::{FreeLibrary, HMODULE};
 use windows_sys::Win32::System::LibraryLoader::{
     GetProcAddress, LOAD_WITH_ALTERED_SEARCH_PATH, LoadLibraryExW, SetDllDirectoryW,
 };
@@ -74,7 +74,10 @@ pub fn set_dirs(ini_dir: &str, dirs: &[String], skip: Vec<String>, inputs_only: 
     r.skip = skip.into_iter().map(|s| s.to_lowercase()).collect();
     r.ini_dir = text::to_win_path(ini_dir);
     r.dirs = dirs.iter().map(|d| text::to_win_path(d)).collect();
-    super::general::set_dirs(&r.ini_dir, r.dirs.first().map(String::as_str).unwrap_or(""));
+    let plugins = r.dirs.first().map(String::as_str).unwrap_or("");
+    super::general::set_dirs(&r.ini_dir, plugins);
+    let app = plugins.rsplit_once('\\').map(|(a, _)| a).unwrap_or(plugins);
+    super::wasabi::set_paths(app, &r.ini_dir);
 }
 
 pub fn data(id: u32) -> Option<Data> {
@@ -258,6 +261,16 @@ unsafe fn load(id: u32, kind: Kind, name: &str, path: &str) -> Plugin {
     };
     if h.is_null() {
         let code = std::io::Error::last_os_error();
+        let missing = missing_imports(path);
+        if !missing.is_empty() {
+            return fail(
+                info,
+                &format!(
+                    "needs {}, which is missing: put it in the Plugins folder or the folder above it",
+                    missing.join(", ")
+                ),
+            );
+        }
         return fail(info, &format!("could not load ({code})"));
     }
     let hwnd = main_hwnd();
@@ -377,16 +390,24 @@ unsafe fn load(id: u32, kind: Kind, name: &str, path: &str) -> Plugin {
                 (*g).hwndParent = hwnd;
                 (*g).hDllInstance = h;
                 // A "unicode" header carries a UTF-16 description.
-                info.description = if (*g).version & 0xFF == 0x11 {
-                    from_wide_ptr((*g).description as *const u16)
-                } else {
-                    from_ansi_ptr((*g).description)
-                };
                 info.unicode = (*g).version & 0xFF == 0x11;
+                let describe = |g: *mut winampGeneralPurposePlugin| {
+                    if (*g).version & 0xFF == 0x11 {
+                        from_wide_ptr((*g).description as *const u16)
+                    } else {
+                        from_ansi_ptr((*g).description)
+                    }
+                };
+                info.description = describe(g);
                 if let Some(init) = (*g).init
                     && init() != 0
                 {
                     return fail(info, "the plugin's init failed");
+                }
+                // Localized plugins fill in their name during init.
+                let after = describe(g);
+                if !after.is_empty() {
+                    info.description = after;
                 }
                 Data::General(Ptr(g))
             }
@@ -400,6 +421,86 @@ unsafe fn load(id: u32, kind: Kind, name: &str, path: &str) -> Plugin {
         hmod: Ptr(h),
         data,
     }
+}
+
+/// The libraries a DLL imports that cannot be loaded from here.
+fn missing_imports(path: &str) -> Vec<String> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return Vec::new();
+    };
+    import_names(&bytes)
+        .into_iter()
+        .filter(|name| {
+            let h = unsafe { LoadLibraryExW(wide(name).as_ptr(), std::ptr::null_mut(), 0) };
+            if h.is_null() {
+                return true;
+            }
+            unsafe { FreeLibrary(h) };
+            false
+        })
+        .collect()
+}
+
+/// The names in a PE file's import directory.
+fn import_names(b: &[u8]) -> Vec<String> {
+    let u16_at = |o: usize| {
+        b.get(o..o + 2)
+            .map(|s| u16::from_le_bytes([s[0], s[1]]) as usize)
+    };
+    let u32_at = |o: usize| {
+        b.get(o..o + 4)
+            .map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]) as usize)
+    };
+    let mut out = Vec::new();
+    let Some(pe) = u32_at(0x3C) else { return out };
+    if b.get(pe..pe + 4) != Some(&b"PE\0\0"[..]) {
+        return out;
+    }
+    let coff = pe + 4;
+    let (Some(nsec), Some(opt_size)) = (u16_at(coff + 2), u16_at(coff + 16)) else {
+        return out;
+    };
+    let opt = coff + 20;
+    let dir = match u16_at(opt) {
+        Some(0x10b) => opt + 96,
+        Some(0x20b) => opt + 112,
+        _ => return out,
+    };
+    // The import directory is entry 1.
+    let Some(imp_rva) = u32_at(dir + 8) else {
+        return out;
+    };
+    let sections = opt + opt_size;
+    let to_off = |rva: usize| -> Option<usize> {
+        (0..nsec).find_map(|i| {
+            let sh = sections + i * 40;
+            let (vsize, va, raw_size, raw) = (
+                u32_at(sh + 8)?,
+                u32_at(sh + 12)?,
+                u32_at(sh + 16)?,
+                u32_at(sh + 20)?,
+            );
+            (rva >= va && rva < va + vsize.max(raw_size)).then(|| rva - va + raw)
+        })
+    };
+    let Some(mut d) = to_off(imp_rva) else {
+        return out;
+    };
+    while let Some(name_rva) = u32_at(d + 12) {
+        if name_rva == 0 || out.len() > 256 {
+            break;
+        }
+        if let Some(o) = to_off(name_rva) {
+            let end = b[o..]
+                .iter()
+                .position(|&c| c == 0)
+                .map(|e| o + e)
+                .unwrap_or(o);
+            out.push(String::from_utf8_lossy(&b[o..end]).into_owned());
+        }
+        d += 20;
+    }
+    out
 }
 
 pub fn configure(id: u32, module: u32) {
