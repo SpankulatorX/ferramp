@@ -84,6 +84,12 @@ the Skins folder of an existing classic player installation (Windows or
 Wine). Missing bitmaps fall back to the built-in skin, the way classic
 skins always worked.
 
+*Skins > Get more skins!* (also a button in the Skin Browser) opens the
+Winamp Skin Museum (skins.webamp.org) inside Ferramp: browse its most
+loved skins or search its 100,000, see a preview, and download one with a
+click. Each skin belongs to its author; Ferramp only fetches the one you
+pick and checks that it loads before saving it in the skins folder.
+
 The original base skin is not ours to ship. On first start Ferramp offers
 to download it from the Internet Archive
 (archive.org/details/winampskin_base_2_91), shows it next to the built-in

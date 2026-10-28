@@ -36,22 +36,7 @@ fn verify(data: &[u8], sha256: &str) -> Result<(), String> {
 /// Downloads one file of the archive item and checks its SHA-256.
 #[cfg(feature = "https")]
 fn fetch(file: &str, sha256: &str) -> Result<Vec<u8>, String> {
-    use std::io::Read;
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(60)))
-        .build()
-        .into();
-    let resp = agent
-        .get(&format!("{BASE_URL}{file}"))
-        .header("User-Agent", concat!("Ferramp/", env!("CARGO_PKG_VERSION")))
-        .call()
-        .map_err(|e| e.to_string())?;
-    let mut data = Vec::new();
-    resp.into_body()
-        .into_reader()
-        .take(4 << 20)
-        .read_to_end(&mut data)
-        .map_err(|e| e.to_string())?;
+    let data = crate::net::get(&format!("{BASE_URL}{file}"), 4 << 20)?;
     verify(&data, sha256)?;
     Ok(data)
 }

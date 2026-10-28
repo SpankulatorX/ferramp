@@ -22,6 +22,8 @@ mod classic_skin;
 mod config;
 mod gfx;
 mod metadata;
+mod museum;
+mod net;
 mod platform;
 mod playlist;
 mod render;

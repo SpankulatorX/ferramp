@@ -118,6 +118,13 @@ pub enum Cmd {
     /// Offer to download the original base skin.
     ClassicSkin,
     ClassicSkinDownload,
+    /// Winamp Skin Museum (opened by GetMoreSkins): search (empty =
+    /// browse), next page, preview, download, show on the website.
+    MuseumSearch(String),
+    MuseumMore,
+    MuseumSelect(usize),
+    MuseumDownload(usize),
+    MuseumWeb,
     AddBookmark,
     BookmarkSelected,
     EditBookmarks,

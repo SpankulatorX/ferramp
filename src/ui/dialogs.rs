@@ -27,6 +27,7 @@ pub enum DialogKind {
     PlaylistEntry,
     VisOptions,
     ClassicSkin,
+    SkinMuseum,
 }
 
 #[derive(Clone, Debug)]
@@ -488,6 +489,101 @@ impl Dialog {
         d
     }
 
+    /// Search and download skins from the Winamp Skin Museum.
+    pub fn skin_museum() -> Dialog {
+        let mut c = vec![
+            Control::Label {
+                text: format!("Search the Winamp Skin Museum ({}):", crate::museum::SITE),
+                rect: r(16, 12, 551, 14),
+                bold: false,
+            },
+            Control::Input {
+                text: String::new(),
+                cursor: 0,
+                rect: r(16, 30, 470, 21),
+            },
+            Control::Button {
+                label: "Search".into(),
+                rect: r(492, 29, 75, 23),
+                id: "search",
+                default: true,
+            },
+            Control::List {
+                items: vec![],
+                values: vec![],
+                selected: None,
+                scroll: 0,
+                rect: r(16, 62, 260, 348),
+            },
+            Control::Image {
+                image: None,
+                note: "Pick a skin to see it".into(),
+                rect: r(292, 62, 275, 348),
+                id: "shot",
+            },
+            Control::Button {
+                label: "More results".into(),
+                rect: r(16, 420, 100, 23),
+                id: "more",
+                default: false,
+            },
+            Control::Button {
+                label: "On the website".into(),
+                rect: r(122, 420, 110, 23),
+                id: "web",
+                default: false,
+            },
+            Control::Button {
+                label: "Download and use".into(),
+                rect: r(346, 420, 120, 23),
+                id: "ok",
+                default: false,
+            },
+            Control::Button {
+                label: "Close".into(),
+                rect: r(472, 420, 95, 23),
+                id: "cancel",
+                default: false,
+            },
+            Control::Label {
+                text: "Loading...".into(),
+                rect: r(16, 452, 551, 14),
+                bold: false,
+            },
+        ];
+        let status = c.len() - 1;
+        c.shrink_to_fit();
+        let mut d = Dialog::new(DialogKind::SkinMuseum, "Skin Museum", 583, 478, c);
+        d.status = Some(status);
+        d
+    }
+
+    /// Replaces the list's items; `keep` holds on to the selection and scroll.
+    pub fn set_list_items(&mut self, items: Vec<String>, keep: bool) {
+        if let Some((li, lv, sel, scroll, _)) = self.list() {
+            *lv = (0..items.len()).collect();
+            *li = items;
+            if !keep {
+                *sel = None;
+                *scroll = 0;
+            }
+        }
+    }
+
+    /// Shows `note` in an image control instead of a picture.
+    pub fn set_image_note(&mut self, which: &str, msg: &str) {
+        for c in &mut self.controls {
+            if let Control::Image {
+                image, note, id, ..
+            } = c
+                && *id == which
+            {
+                *image = None;
+                *note = msg.to_string();
+            }
+        }
+    }
+
     /// Fills an image control, or shows why it could not be loaded.
     pub fn set_image(&mut self, which: &str, result: Result<Bitmap, String>) {
         for c in &mut self.controls {
@@ -687,6 +783,12 @@ impl Dialog {
                 default: false,
             },
             Control::Button {
+                label: "Get more skins...".into(),
+                rect: r(91, 236, 110, 23),
+                id: "more",
+                default: false,
+            },
+            Control::Button {
                 label: "Close".into(),
                 rect: r(235, 236, 75, 23),
                 id: "ok",
@@ -845,7 +947,17 @@ impl Dialog {
                 None => Outcome::None,
             },
             (DialogKind::SkinBrowser, "folder") => Outcome::Run(vec![Cmd::LoadSkinDialog]),
+            (DialogKind::SkinBrowser, "more") => Outcome::Run(vec![Cmd::GetMoreSkins]),
             (DialogKind::ClassicSkin, "download") => Outcome::Run(vec![Cmd::ClassicSkinDownload]),
+            (DialogKind::SkinMuseum, "search") => Outcome::Run(vec![Cmd::MuseumSearch(
+                self.input_text().trim().to_string(),
+            )]),
+            (DialogKind::SkinMuseum, "more") => Outcome::Run(vec![Cmd::MuseumMore]),
+            (DialogKind::SkinMuseum, "web") => Outcome::Run(vec![Cmd::MuseumWeb]),
+            (DialogKind::SkinMuseum, "ok") => match self.selected_value() {
+                Some(i) => Outcome::Run(vec![Cmd::MuseumDownload(i)]),
+                None => Outcome::None,
+            },
             (DialogKind::EqPresets, "ok") => {
                 let op = self.eq_op.unwrap_or(crate::ui::EqLibOp::LoadPreset);
                 let typed = self.input_text().trim().to_string();
@@ -891,6 +1003,12 @@ impl Dialog {
     }
 
     fn list_changed(&mut self) -> Outcome {
+        if self.kind == DialogKind::SkinMuseum {
+            return match self.selected_value() {
+                Some(i) => Outcome::Run(vec![Cmd::MuseumSelect(i)]),
+                None => Outcome::None,
+            };
+        }
         if self.kind == DialogKind::SkinBrowser {
             let skin = match self.selected_value() {
                 Some(0) | None => None,

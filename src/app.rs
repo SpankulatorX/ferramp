@@ -37,6 +37,19 @@ pub enum UserEvent {
     Wake,
     Picked(Pick, Vec<PathBuf>),
     Classic(crate::classic_skin::Fetched),
+    Museum(crate::museum::Fetched),
+}
+
+/// State of the Skin Museum dialog's searches and downloads.
+#[derive(Default)]
+struct Museum {
+    query: String,
+    results: Vec<crate::museum::Entry>,
+    loading: bool,
+    exhausted: bool,
+    selected: Option<String>,
+    shots: HashMap<String, Bitmap>,
+    downloading: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -161,6 +174,7 @@ pub struct App {
     exiting: bool,
     cli_skin: bool,
     classic_busy: bool,
+    museum: Museum,
     tip: Option<Tooltip>,
     hover_tip: Option<(WinKind, String, Instant)>,
     next_frame: Instant,
@@ -218,6 +232,7 @@ impl App {
             exiting: false,
             cli_skin: false,
             classic_busy: false,
+            museum: Museum::default(),
             tip: None,
             hover_tip: None,
             next_frame: Instant::now(),
@@ -1607,6 +1622,155 @@ impl App {
         }
     }
 
+    fn museum_dialog(&mut self) -> Option<&mut DialogWin> {
+        self.dialogs
+            .iter_mut()
+            .find(|d| d.dialog.kind == DialogKind::SkinMuseum)
+    }
+
+    fn museum_status(&mut self, msg: &str) {
+        if let Some(d) = self.museum_dialog() {
+            d.dialog.set_status(msg);
+            d.os.window.request_redraw();
+        }
+    }
+
+    fn open_museum(&mut self, el: &ActiveEventLoop) {
+        if let Some(d) = self.museum_dialog() {
+            d.os.window.focus_window();
+            return;
+        }
+        self.museum = Museum::default();
+        self.open_dialog(el, Dialog::skin_museum());
+        self.museum_load(String::new(), false);
+    }
+
+    /// Fetches the first page of `query`, or the next page when `more`.
+    fn museum_load(&mut self, query: String, more: bool) {
+        if self.museum.loading || (more && self.museum.exhausted) {
+            return;
+        }
+        let offset = if more { self.museum.results.len() } else { 0 };
+        self.museum.query = query.clone();
+        self.museum.loading = true;
+        self.museum_status("Loading...");
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let result = crate::museum::page(&query, offset);
+            let f = crate::museum::Fetched::Page {
+                query,
+                offset,
+                result,
+            };
+            let _ = proxy.send_event(UserEvent::Museum(f));
+        });
+    }
+
+    fn museum_select(&mut self, i: usize) {
+        let Some(e) = self.museum.results.get(i).cloned() else {
+            return;
+        };
+        self.museum.selected = Some(e.md5.clone());
+        if let Some(b) = self.museum.shots.get(&e.md5).cloned() {
+            if let Some(d) = self.museum_dialog() {
+                d.dialog.set_image("shot", Ok(b));
+                d.os.window.request_redraw();
+            }
+            return;
+        }
+        if let Some(d) = self.museum_dialog() {
+            d.dialog.set_image_note("shot", "Loading preview...");
+            d.os.window.request_redraw();
+        }
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let result = crate::museum::screenshot(&e.md5);
+            let f = crate::museum::Fetched::Screenshot { md5: e.md5, result };
+            let _ = proxy.send_event(UserEvent::Museum(f));
+        });
+    }
+
+    fn museum_download(&mut self, i: usize) {
+        let Some(e) = self.museum.results.get(i).cloned() else {
+            return;
+        };
+        if self.museum.downloading {
+            return;
+        }
+        self.museum.downloading = true;
+        let name = e.name();
+        self.museum_status(&format!("Downloading {name}..."));
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let result = crate::museum::download(&e);
+            let f = crate::museum::Fetched::Skin { name, result };
+            let _ = proxy.send_event(UserEvent::Museum(f));
+        });
+    }
+
+    fn museum_fetched(&mut self, el: &ActiveEventLoop, f: crate::museum::Fetched) {
+        use crate::museum::{Fetched, PAGE};
+        match f {
+            Fetched::Page {
+                query,
+                offset,
+                result,
+            } => {
+                if query != self.museum.query {
+                    return;
+                }
+                self.museum.loading = false;
+                match result {
+                    Ok(page) => {
+                        self.museum.exhausted = page.len() < PAGE / 2;
+                        if offset == 0 {
+                            self.museum.results = page;
+                        } else {
+                            self.museum.results.extend(page);
+                        }
+                        let items: Vec<String> =
+                            self.museum.results.iter().map(|e| e.name()).collect();
+                        let n = items.len();
+                        let msg = if n == 0 {
+                            "No skins found.".to_string()
+                        } else {
+                            format!("{n} skins. Each skin belongs to its author.")
+                        };
+                        if let Some(d) = self.museum_dialog() {
+                            d.dialog.set_list_items(items, offset > 0);
+                            if offset == 0 {
+                                d.dialog.set_image_note("shot", "Pick a skin to see it");
+                            }
+                        }
+                        self.museum_status(&msg);
+                    }
+                    Err(e) => self.museum_status(&format!("Could not reach the museum: {e}")),
+                }
+            }
+            Fetched::Screenshot { md5, result } => {
+                if let Ok(b) = &result {
+                    self.museum.shots.insert(md5.clone(), b.clone());
+                }
+                if self.museum.selected.as_deref() == Some(md5.as_str())
+                    && let Some(d) = self.museum_dialog()
+                {
+                    d.dialog.set_image("shot", result);
+                    d.os.window.request_redraw();
+                }
+            }
+            Fetched::Skin { name, result } => {
+                self.museum.downloading = false;
+                match result {
+                    Ok(path) => {
+                        self.load_skin(el, Some(path));
+                        self.museum_status(&format!("Now using {name}."));
+                    }
+                    Err(e) => self.museum_status(&format!("Download failed: {e}")),
+                }
+            }
+        }
+    }
+
     fn dialog_index(&self, id: WindowId) -> Option<usize> {
         self.dialogs.iter().position(|d| d.os.window.id() == id)
     }
@@ -2250,7 +2414,18 @@ impl App {
                     st.vis_mode = VisMode::Off;
                 }
             }
-            Cmd::GetMoreSkins => open_url("https://skins.webamp.org/"),
+            Cmd::GetMoreSkins => self.open_museum(el),
+            Cmd::MuseumWeb => match &self.museum.selected {
+                Some(md5) => open_url(&format!("https://{}/skin/{md5}", crate::museum::SITE)),
+                None => open_url(&format!("https://{}/", crate::museum::SITE)),
+            },
+            Cmd::MuseumSearch(q) => self.museum_load(q, false),
+            Cmd::MuseumMore => {
+                let q = self.museum.query.clone();
+                self.museum_load(q, true);
+            }
+            Cmd::MuseumSelect(i) => self.museum_select(i),
+            Cmd::MuseumDownload(i) => self.museum_download(i),
             Cmd::ClassicSkin => self.open_classic_skin(el),
             Cmd::ClassicSkinDownload => self.download_classic_skin(),
             Cmd::AddBookmark => {
@@ -2610,6 +2785,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Wake => {}
             UserEvent::Picked(p, paths) => self.picked(el, p, paths),
             UserEvent::Classic(f) => self.classic_fetched(el, f),
+            UserEvent::Museum(f) => self.museum_fetched(el, f),
         }
     }
 
