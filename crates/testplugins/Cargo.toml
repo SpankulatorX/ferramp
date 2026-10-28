@@ -1,6 +1,6 @@
 [package]
 name = "ferramp-testplugins"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Classic-API test plugins (input, output, DSP, vis, general) for Ferramp's plugin host"

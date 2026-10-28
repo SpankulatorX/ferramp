@@ -3,16 +3,33 @@ desktop audio player, written in Rust. Main window, equalizer and
 playlist editor, docked together. Load any classic `.wsz` skin and it
 looks the way it always did, pixel for pixel.
 
-## New in 0.1.1
+## New in 0.2.0
 
-- Native Linux packages: .deb, .rpm and AppImage for x86_64 and ARM64,
-  and a one-line installer that checks the release checksums (thanks to
-  @9M2PJU).
-- The three windows now start docked on high-DPI screens. With display
-  scaling they used to open on top of each other.
-- The Linux menu entry starts Ferramp when it is installed into
-  `~/.local`, which is not on the desktop's PATH.
-- `--skin` works after `--render DIR` as well.
+- Classic plug-ins: input (`in_*.dll`), output (`out_*.dll`), DSP
+  (`dsp_*.dll`), visualization (`vis_*.dll`) and general purpose
+  (`gen_*.dll`) plug-ins from the 2.x and 5.x players load from the
+  `Plugins` folder in the configuration folder. *Options > Plug-ins*
+  (Ctrl+K) lists them, with Configure, About, Start / Stop and
+  Enable / Disable.
+- Plug-ins run in a separate helper, `ferramp-plughost`, which ships in
+  every download. Windows runs it directly; Linux and macOS run it under
+  Wine, so install Wine to use plug-ins. A plug-in that crashes or hangs
+  only takes the helper down, and one that fails while loading is left
+  out and marked in the list together with the reason.
+- Input plug-ins play formats Ferramp has no decoder for (Opus, tracker
+  modules, SID, VGM, AdLib and more) and supply playlist titles and
+  durations. Items general plug-ins add to the player menu, such as Big
+  Clock's show and hide, appear in Ferramp's main menu.
+- Tested under Wine on Linux: `in_opus`, `in_openmpt`, `in_vgm`,
+  `in_sidplay2`, `in_adlib`, `dsp_bs2b`, `dsp_qat` and `gen_bigclock`,
+  plus several more that load. Plug-ins built only for WACUP do not
+  load. Real plug-ins have not been tried on Windows or macOS yet; the
+  helper itself is tested on Windows and under Wine.
+- First start offers the original base skin from the Internet Archive,
+  shown next to the built-in skin and checked against a fixed SHA-256.
+- *Skins > Get more skins!* searches the Winamp Skin Museum and
+  installs a skin with one click.
+- Sharp text in dialogs, menus and tooltips on high-DPI screens.
 
 ## Downloads
 
@@ -58,13 +75,16 @@ newer (Ubuntu 22.04, Debian 12, Fedora 36 or later).
   editor with the ADD, REM, SEL, MISC and LIST menus, window-shade mode,
   double size, docking and snapping.
 - MP3, Ogg Vorbis, FLAC, WAV, AIFF, AAC/M4A, ALAC, CAF, Matroska audio
-  and internet radio with stream titles.
+  and internet radio with stream titles, plus whatever your input
+  plug-ins play.
 - Classic skins with `region.txt` shapes, skin cursors, `viscolor.txt`
   and `pledit.txt`.
 
 ## Known limitations
 
-- No Opus, WavPack, tracker modules or MIDI.
+- Without plug-ins, no Opus, WavPack, tracker modules or MIDI.
+- Plug-ins that need the later player's media library or other parts of
+  its internal service layer do not start.
 - The equalizer graph is close to the original but not exact.
 - Native Wayland mode (`FERRAMP_WAYLAND=1`) cannot dock windows.
-- No media library, minibrowser, video window or plug-ins.
+- No media library, minibrowser or video window.

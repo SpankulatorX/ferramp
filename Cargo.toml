@@ -1,6 +1,6 @@
 [package]
 name = "ferramp"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "A from-scratch, cross-platform reimplementation of the classic two-point-x era skinnable media player, in Rust"
