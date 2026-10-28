@@ -26,6 +26,7 @@ mod museum;
 mod net;
 mod platform;
 mod playlist;
+mod plugins;
 mod render;
 mod skin;
 mod state;

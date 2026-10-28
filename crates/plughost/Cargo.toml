@@ -1,0 +1,30 @@
+[package]
+name = "ferramp-plughost"
+version = "0.1.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Loads classic Windows player plugins for Ferramp"
+publish = false
+
+[[bin]]
+name = "ferramp-plughost"
+path = "src/main.rs"
+
+[dependencies]
+ferramp-plugproto = { path = "../plugproto" }
+ferramp-winampabi = { path = "../winampabi" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_Memory",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_System_DataExchange",
+    "Win32_UI_WindowsAndMessaging",
+] }

@@ -109,6 +109,8 @@ pub struct Shared {
     /// Generation of the decoder allowed to push audio; older decoders that
     /// are still winding down stop at their next push.
     active: AtomicU64,
+    /// Input and DSP plugins, once they are loaded.
+    plugins: Mutex<Option<Arc<crate::plugins::Plugins>>>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -137,6 +139,7 @@ impl Shared {
             eq_version: AtomicU64::new(0),
             out_rate: AtomicU32::new(44100),
             active: AtomicU64::new(0),
+            plugins: Mutex::new(None),
         }
     }
 }
@@ -261,6 +264,11 @@ impl Engine {
     pub fn simulate(&mut self, status: Status, position: f64) {
         self.status = status;
         self.simulated_position = Some(position);
+    }
+
+    /// Lets the decoder use input and DSP plugins.
+    pub fn set_plugins(&self, p: Option<Arc<crate::plugins::Plugins>>) {
+        *self.shared.plugins.lock().unwrap() = p;
     }
 
     pub fn out_rate(&self) -> u32 {
@@ -603,98 +611,295 @@ fn decode_thread(ctx: DecodeCtx) {
     }
 }
 
-fn decode(ctx: &DecodeCtx) -> Result<(), String> {
-    let (title_tx, title_rx) = mpsc::channel::<String>();
-    let mut hint = Hint::new();
-    let mut stream_name = None;
-    let mut stream_kbps = None;
-    let mss = match &ctx.source {
-        Source::File(path) => {
-            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                hint.with_extension(ext);
+/// What a decoder reports when a track opens.
+#[derive(Clone, Debug, Default)]
+pub struct TrackInfo {
+    pub rate: u32,
+    pub channels: u32,
+    pub duration: Option<f64>,
+    pub kbps: u32,
+    pub stream_name: Option<String>,
+}
+
+/// A source of decoded audio for the decoder thread: the built-in decoder
+/// or an input plugin.
+pub trait Track {
+    fn info(&self) -> &TrackInfo;
+    /// Appends decoded stereo frames (possibly none, to let the caller look
+    /// at its commands); `Ok(false)` at the end of the track.
+    fn read(&mut self, frames: &mut Vec<[f32; 2]>) -> Result<bool, String>;
+    /// Seeks and returns the time reached, or `None` if it cannot.
+    fn seek(&mut self, secs: f64) -> Option<f64>;
+    /// The current bitrate, for the variable-bitrate display.
+    fn kbps(&self) -> Option<u32> {
+        None
+    }
+    /// A new stream title (internet radio).
+    fn title(&mut self) -> Option<String> {
+        None
+    }
+}
+
+/// The built-in decoder (Symphonia).
+struct SymTrack {
+    format: Box<dyn symphonia::core::formats::FormatReader>,
+    decoder: Box<dyn symphonia::core::codecs::audio::AudioDecoder>,
+    track_id: u32,
+    tb: Option<symphonia::core::units::TimeBase>,
+    info: TrackInfo,
+    samples: Vec<f32>,
+    bits_window: VecDeque<(f64, usize)>,
+    vbr_capable: bool,
+    kbps: Option<u32>,
+    titles: Receiver<String>,
+}
+
+impl SymTrack {
+    fn open(source: &Source) -> Result<SymTrack, String> {
+        let (title_tx, title_rx) = mpsc::channel::<String>();
+        let mut hint = Hint::new();
+        let mut stream_name = None;
+        let mut stream_kbps = None;
+        let mss = match source {
+            Source::File(path) => {
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    hint.with_extension(ext);
+                }
+                let f =
+                    std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+                MediaSourceStream::new(Box::new(f), Default::default())
             }
-            let f = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-            MediaSourceStream::new(Box::new(f), Default::default())
-        }
-        Source::Url(url) => {
-            let opened = stream::open(url, title_tx)?;
-            if let Some(ct) = &opened.content_type {
-                hint.mime_type(ct);
-                if ct.contains("mpeg") {
-                    hint.with_extension("mp3");
-                } else if ct.contains("aac") {
-                    hint.with_extension("aac");
-                } else if ct.contains("ogg") {
-                    hint.with_extension("ogg");
+            Source::Url(url) => {
+                let opened = stream::open(url, title_tx)?;
+                if let Some(ct) = &opened.content_type {
+                    hint.mime_type(ct);
+                    if ct.contains("mpeg") {
+                        hint.with_extension("mp3");
+                    } else if ct.contains("aac") {
+                        hint.with_extension("aac");
+                    } else if ct.contains("ogg") {
+                        hint.with_extension("ogg");
+                    }
+                }
+                stream_name = opened.name;
+                stream_kbps = opened.bitrate;
+                MediaSourceStream::new(
+                    Box::new(ReadOnlySource::new(opened.reader)),
+                    Default::default(),
+                )
+            }
+        };
+        let format = symphonia::default::get_probe()
+            .probe(
+                &hint,
+                mss,
+                FormatOptions::default(),
+                MetadataOptions::default(),
+            )
+            .map_err(|e| format!("unsupported or unreadable file ({e})"))?;
+        let track = format
+            .default_track(TrackType::Audio)
+            .ok_or("no audio track")?
+            .clone();
+        let params = track
+            .codec_params
+            .as_ref()
+            .and_then(|p| p.audio())
+            .ok_or("no audio parameters")?
+            .clone();
+        let decoder = symphonia::default::get_codecs()
+            .make_audio_decoder(&params, &AudioDecoderOptions::default())
+            .map_err(|e| format!("unsupported codec ({e})"))?;
+        let rate = params.sample_rate.unwrap_or(44100);
+        let channels = params.channels.as_ref().map(|c| c.count()).unwrap_or(2) as u32;
+        let duration = match (track.time_base, track.duration) {
+            (Some(tb), Some(d)) => tb.calc_duration(d).map(|t| t.as_secs_f64()),
+            _ => match track.num_frames {
+                Some(n) if rate > 0 => Some(n as f64 / rate as f64),
+                _ => None,
+            },
+        };
+        let file_kbps = match (source, duration) {
+            (Source::File(p), Some(d)) if d > 0.0 => std::fs::metadata(p)
+                .ok()
+                .map(|m| ((m.len() as f64 * 8.0) / d / 1000.0).round() as u32),
+            _ => None,
+        };
+        Ok(SymTrack {
+            format,
+            decoder,
+            track_id: track.id,
+            tb: track.time_base,
+            info: TrackInfo {
+                rate,
+                channels,
+                duration,
+                kbps: stream_kbps.or(file_kbps).unwrap_or(0),
+                stream_name,
+            },
+            samples: Vec::new(),
+            bits_window: VecDeque::new(),
+            vbr_capable: matches!(source, Source::File(_)),
+            kbps: None,
+            titles: title_rx,
+        })
+    }
+}
+
+impl Track for SymTrack {
+    fn info(&self) -> &TrackInfo {
+        &self.info
+    }
+
+    fn read(&mut self, frames: &mut Vec<[f32; 2]>) -> Result<bool, String> {
+        loop {
+            let packet = match self.format.next_packet() {
+                Ok(Some(p)) => p,
+                Ok(None) => return Ok(false),
+                Err(SymError::ResetRequired) => return Ok(false),
+                Err(SymError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    return Ok(false);
+                }
+                Err(e) => return Err(format!("read error: {e}")),
+            };
+            if packet.track_id != self.track_id {
+                continue;
+            }
+            let pkt_bytes = packet.data.len();
+            let pkt_secs = self
+                .tb
+                .and_then(|tb| tb.calc_duration(packet.dur))
+                .map(|t| t.as_secs_f64())
+                .unwrap_or(0.0);
+            let buf = match self.decoder.decode(&packet) {
+                Ok(b) => b,
+                Err(SymError::DecodeError(_)) => continue,
+                Err(e) => return Err(format!("decode error: {e}")),
+            };
+            let ch = buf.spec().channels().count().max(1);
+            self.samples.clear();
+            buf.copy_to_vec_interleaved(&mut self.samples);
+            for f in self.samples.chunks_exact(ch) {
+                frames.push(if ch == 1 { [f[0], f[0]] } else { [f[0], f[1]] });
+            }
+            // Moving bitrate display for variable-bitrate files.
+            if self.vbr_capable && pkt_secs > 0.0 {
+                self.bits_window.push_back((pkt_secs, pkt_bytes));
+                let mut total_t: f64 = self.bits_window.iter().map(|x| x.0).sum();
+                while total_t > 1.0 && self.bits_window.len() > 1 {
+                    let (t, _) = self.bits_window.pop_front().unwrap();
+                    total_t -= t;
+                }
+                let bytes: usize = self.bits_window.iter().map(|x| x.1).sum();
+                if total_t > 0.2 {
+                    self.kbps = Some(((bytes as f64 * 8.0) / total_t / 1000.0).round() as u32);
                 }
             }
-            stream_name = opened.name;
-            stream_kbps = opened.bitrate;
-            MediaSourceStream::new(
-                Box::new(ReadOnlySource::new(opened.reader)),
-                Default::default(),
-            )
+            return Ok(true);
         }
-    };
-    let mut format = symphonia::default::get_probe()
-        .probe(
-            &hint,
-            mss,
-            FormatOptions::default(),
-            MetadataOptions::default(),
+    }
+
+    fn seek(&mut self, secs: f64) -> Option<f64> {
+        let to = SeekTo::Time {
+            time: Time::try_from_secs_f64(secs).unwrap_or(Time::ZERO),
+            track_id: Some(self.track_id),
+        };
+        let seeked = self.format.seek(SeekMode::Accurate, to).ok()?;
+        self.decoder.reset();
+        Some(
+            self.tb
+                .and_then(|tb| tb.calc_time(seeked.actual_ts))
+                .map(|t| t.as_secs_f64())
+                .unwrap_or(secs),
         )
-        .map_err(|e| format!("unsupported or unreadable file ({e})"))?;
-    let track = format
-        .default_track(TrackType::Audio)
-        .ok_or("no audio track")?
-        .clone();
-    let params = track
-        .codec_params
-        .as_ref()
-        .and_then(|p| p.audio())
-        .ok_or("no audio parameters")?
-        .clone();
-    let mut decoder = symphonia::default::get_codecs()
-        .make_audio_decoder(&params, &AudioDecoderOptions::default())
-        .map_err(|e| format!("unsupported codec ({e})"))?;
-    let in_rate = params.sample_rate.unwrap_or(44100);
+    }
+
+    fn kbps(&self) -> Option<u32> {
+        self.kbps
+    }
+
+    fn title(&mut self) -> Option<String> {
+        self.titles.try_recv().ok()
+    }
+}
+
+/// Opens the track with the built-in decoder or an input plugin: plugins
+/// first for formats only they know, and as a fallback when the built-in
+/// decoder cannot read a file.
+fn open_track(
+    source: &Source,
+    plugins: Option<&Arc<crate::plugins::Plugins>>,
+) -> Result<Box<dyn Track>, String> {
+    use crate::plugins::input::PluginTrack;
+    let file = match source {
+        Source::File(p) => Some(p),
+        Source::Url(_) => None,
+    };
+    let mut plugin_error = None;
+    if let (Some(path), Some(sys)) = (file, plugins)
+        && sys.prefers(path)
+    {
+        match PluginTrack::open(sys, path) {
+            Ok(t) => return Ok(Box::new(t)),
+            Err(e) => plugin_error = Some(e),
+        }
+    }
+    match SymTrack::open(source) {
+        Ok(t) => Ok(Box::new(t)),
+        Err(e) => {
+            if let (Some(path), Some(sys), None) = (file, plugins, &plugin_error)
+                && sys.input_for(path).is_some()
+                && let Ok(t) = PluginTrack::open(sys, path)
+            {
+                return Ok(Box::new(t));
+            }
+            Err(plugin_error.unwrap_or(e))
+        }
+    }
+}
+
+/// Runs a block through the active DSP plugin, if any.
+fn apply_dsp(sys: &crate::plugins::Plugins, rate: u32, frames: &mut Vec<[f32; 2]>) {
+    if !sys.dsp_active() || frames.is_empty() {
+        return;
+    }
+    let to_i16 = |v: f32| (v.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+    let samples: Vec<i16> = frames
+        .iter()
+        .flat_map(|f| [to_i16(f[0]), to_i16(f[1])])
+        .collect();
+    if let Some(out) = sys.dsp_process(rate, 2, samples) {
+        frames.clear();
+        frames.extend(
+            out.chunks_exact(2)
+                .map(|c| [c[0] as f32 / 32768.0, c[1] as f32 / 32768.0]),
+        );
+    }
+}
+
+fn decode(ctx: &DecodeCtx) -> Result<(), String> {
+    let plugins = ctx.shared.plugins.lock().unwrap().clone();
+    let mut track = open_track(&ctx.source, plugins.as_ref())?;
+    let info = track.info().clone();
+    let in_rate = info.rate;
     if !(1000..=768_000).contains(&in_rate) {
         return Err(format!("unsupported sample rate {in_rate} Hz"));
     }
-    let channels = params.channels.as_ref().map(|c| c.count()).unwrap_or(2) as u32;
-    let duration = match (track.time_base, track.duration) {
-        (Some(tb), Some(d)) => tb.calc_duration(d).map(|t| t.as_secs_f64()),
-        _ => match track.num_frames {
-            Some(n) if in_rate > 0 => Some(n as f64 / in_rate as f64),
-            _ => None,
-        },
-    };
-    let file_kbps = match (&ctx.source, duration) {
-        (Source::File(p), Some(d)) if d > 0.0 => std::fs::metadata(p)
-            .ok()
-            .map(|m| ((m.len() as f64 * 8.0) / d / 1000.0).round() as u32),
-        _ => None,
-    };
-    let initial_kbps = stream_kbps.or(file_kbps).unwrap_or(0);
-    ctx.shared.kbps.store(initial_kbps, Ordering::Relaxed);
+    ctx.shared.kbps.store(info.kbps, Ordering::Relaxed);
     ctx.send(Event::Opened {
-        duration,
-        kbps: initial_kbps,
+        duration: info.duration,
+        kbps: info.kbps,
         khz: (in_rate as f64 / 1000.0).round() as u32,
-        channels,
-        stream_name,
+        channels: info.channels,
+        stream_name: info.stream_name.clone(),
     });
 
     let out_rate = ctx.shared.out_rate.load(Ordering::Relaxed);
     let mut resampler = Resampler::new(in_rate, out_rate);
     let mut eq = Equalizer::new(out_rate, *ctx.shared.eq.lock().unwrap());
     let mut eq_version = ctx.shared.eq_version.load(Ordering::Relaxed);
-    let mut samples: Vec<f32> = Vec::new();
     let mut frames: Vec<[f32; 2]> = Vec::new();
     let mut out: Vec<[f32; 2]> = Vec::new();
-    let mut bits_window: VecDeque<(f64, usize)> = VecDeque::new();
-    let tb = track.time_base;
-    let is_vbr_capable = matches!(ctx.source, Source::File(_));
 
     'track: loop {
         loop {
@@ -706,17 +911,8 @@ fn decode(ctx: &DecodeCtx) -> Result<(), String> {
             match cmd {
                 Ok(Cmd::Stop) | Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
                 Ok(Cmd::Seek(secs)) => {
-                    let to = SeekTo::Time {
-                        time: Time::try_from_secs_f64(secs).unwrap_or(Time::ZERO),
-                        track_id: Some(track.id),
-                    };
-                    if let Ok(seeked) = format.seek(SeekMode::Accurate, to) {
-                        decoder.reset();
+                    if let Some(actual) = track.seek(secs) {
                         resampler.reset();
-                        let actual = tb
-                            .and_then(|tb| tb.calc_time(seeked.actual_ts))
-                            .map(|t| t.as_secs_f64())
-                            .unwrap_or(secs);
                         let now = ctx.pushed.load(Ordering::SeqCst);
                         ctx.shared.discard_until.store(now, Ordering::SeqCst);
                         let mut tl = ctx.shared.timeline.lock().unwrap();
@@ -729,7 +925,7 @@ fn decode(ctx: &DecodeCtx) -> Result<(), String> {
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
             }
-            while let Ok(t) = title_rx.try_recv() {
+            while let Some(t) = track.title() {
                 ctx.send(Event::StreamTitle(t));
             }
             let v = ctx.shared.eq_version.load(Ordering::Relaxed);
@@ -738,48 +934,18 @@ fn decode(ctx: &DecodeCtx) -> Result<(), String> {
                 eq.set(*ctx.shared.eq.lock().unwrap());
             }
 
-            let packet = match format.next_packet() {
-                Ok(Some(p)) => p,
-                Ok(None) => break,
-                Err(SymError::ResetRequired) => break,
-                Err(SymError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                Err(e) => return Err(format!("read error: {e}")),
-            };
-            if packet.track_id != track.id {
+            frames.clear();
+            if !track.read(&mut frames)? {
+                break;
+            }
+            if let Some(k) = track.kbps() {
+                ctx.shared.kbps.store(k, Ordering::Relaxed);
+            }
+            if frames.is_empty() {
                 continue;
             }
-            let pkt_bytes = packet.data.len();
-            let pkt_secs = tb
-                .and_then(|tb| tb.calc_duration(packet.dur))
-                .map(|t| t.as_secs_f64())
-                .unwrap_or(0.0);
-            let buf = match decoder.decode(&packet) {
-                Ok(b) => b,
-                Err(SymError::DecodeError(_)) => continue,
-                Err(e) => return Err(format!("decode error: {e}")),
-            };
-            let ch = buf.spec().channels().count().max(1);
-            samples.clear();
-            buf.copy_to_vec_interleaved(&mut samples);
-            frames.clear();
-            for f in samples.chunks_exact(ch) {
-                frames.push(if ch == 1 { [f[0], f[0]] } else { [f[0], f[1]] });
-            }
-            // Moving bitrate display for variable-bitrate files.
-            if is_vbr_capable && pkt_secs > 0.0 {
-                bits_window.push_back((pkt_secs, pkt_bytes));
-                let mut total_t: f64 = bits_window.iter().map(|x| x.0).sum();
-                while total_t > 1.0 && bits_window.len() > 1 {
-                    let (t, _) = bits_window.pop_front().unwrap();
-                    total_t -= t;
-                }
-                let bytes: usize = bits_window.iter().map(|x| x.1).sum();
-                if total_t > 0.2 {
-                    ctx.shared.kbps.store(
-                        ((bytes as f64 * 8.0) / total_t / 1000.0).round() as u32,
-                        Ordering::Relaxed,
-                    );
-                }
+            if let Some(sys) = &plugins {
+                apply_dsp(sys, in_rate, &mut frames);
             }
             out.clear();
             resampler.process(&frames, &mut out);

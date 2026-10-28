@@ -1,0 +1,9 @@
+[package]
+name = "ferramp-winampabi"
+version = "0.1.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Our own definitions of the classic player plugin interface (structures, constants), for interoperability"
+publish = false
+
+[dependencies]

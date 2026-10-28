@@ -1,0 +1,19 @@
+[package]
+name = "ferramp-testplugins"
+version = "0.1.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Classic-API test plugins (input, output, DSP, vis, general) for Ferramp's plugin host"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ferramp-winampabi = { path = "../winampabi" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }
