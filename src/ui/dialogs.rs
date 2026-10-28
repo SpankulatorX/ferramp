@@ -460,9 +460,17 @@ impl Dialog {
             id: "original",
         });
         let by = top + ih + 14;
+        c.push(Control::Button {
+            label: "Browse skin museum...".into(),
+            rect: r(16, by, 140, 23),
+            id: "museum",
+            default: false,
+        });
         c.push(Control::Label {
-            text: "You can switch skins at any time with Alt+S.".into(),
-            rect: r(16, by + 4, 330, 14),
+            text: "You can switch skins at any time with Alt+S, or come back here from \
+                   Skins > Classic Look."
+                .into(),
+            rect: r(16, by + 33, 570, 14),
             bold: false,
         });
         let status = c.len() - 1;
@@ -482,7 +490,7 @@ impl Dialog {
             DialogKind::ClassicSkin,
             "Classic Look",
             602,
-            by + 23 + 14,
+            by + 23 + 34,
             c,
         );
         d.status = Some(status);
@@ -949,6 +957,7 @@ impl Dialog {
             (DialogKind::SkinBrowser, "folder") => Outcome::Run(vec![Cmd::LoadSkinDialog]),
             (DialogKind::SkinBrowser, "more") => Outcome::Run(vec![Cmd::GetMoreSkins]),
             (DialogKind::ClassicSkin, "download") => Outcome::Run(vec![Cmd::ClassicSkinDownload]),
+            (DialogKind::ClassicSkin, "museum") => Outcome::Done(vec![Cmd::GetMoreSkins]),
             (DialogKind::SkinMuseum, "search") => Outcome::Run(vec![Cmd::MuseumSearch(
                 self.input_text().trim().to_string(),
             )]),
