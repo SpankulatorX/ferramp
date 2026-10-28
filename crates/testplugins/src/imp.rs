@@ -139,6 +139,10 @@ unsafe extern "C" fn in_quit() {
 }
 unsafe extern "C" fn in_get_file_info(file: *const c_void, title: *mut c_void, len: *mut c_int) {
     let path = unsafe { cstr(file) };
+    // Some real plugins crash on a file they cannot describe.
+    if path.contains("crashinfo") {
+        unsafe { std::ptr::null_mut::<c_int>().write_volatile(1) };
+    }
     if let Some((freq, secs, _, _)) = read_tone(&path) {
         unsafe {
             if !title.is_null() {

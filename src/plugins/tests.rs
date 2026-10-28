@@ -91,6 +91,8 @@ fn all_plugin_kinds_end_to_end() {
     std::fs::write(&tone, "freq=1000 seconds=1.5 rate=48000 channels=2").unwrap();
     let tone_classic = base.join("b-noxr.fttone");
     std::fs::write(&tone_classic, "freq=500 seconds=1 rate=44100 channels=1").unwrap();
+    let crash_info = base.join("c-crashinfo.fttone");
+    std::fs::write(&crash_info, "freq=300 seconds=1").unwrap();
     // SAFETY: set before the host process (which inherits it) starts.
     unsafe {
         std::env::set_var("FERRAMP_TEST_DIR", win_path(&logs));
@@ -159,6 +161,19 @@ fn all_plugin_kinds_end_to_end() {
     assert_eq!(t.seek(1.0), Some(1.0));
     let after = read_all(&mut t);
     assert_eq!(after.len(), 24000, "frames after seeking to 1.0 s");
+    drop(t);
+
+    // A plugin crashing while describing a file takes down only the host
+    // that answers file information, never what is playing.
+    let mut t = PluginTrack::open(&sys, &tone).expect("open pull again");
+    let mut first = Vec::new();
+    while first.is_empty() {
+        assert!(t.read(&mut first).unwrap());
+    }
+    assert!(sys.file_info(&crash_info).is_none());
+    let mut rest = read_all(&mut t);
+    rest.extend(first);
+    assert_eq!(rest.len(), 72000, "the stream survived the crash");
     drop(t);
 
     // Input through the classic path (the plugin's own thread and our

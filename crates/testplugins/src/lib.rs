@@ -6,7 +6,8 @@
 //!
 //! - Input: `*.fttone` files (`freq=440 seconds=3 rate=44100 channels=2`)
 //!   play a sine. The pull decoder refuses paths containing `noxr`, so both
-//!   decoding paths get exercised.
+//!   decoding paths get exercised. File information for a path containing
+//!   `crashinfo` crashes the plugin.
 //! - Output: appends the PCM it receives to `out.raw`.
 //! - DSP: module 0 inverts the samples, module 1 doubles every frame.
 //! - Visualization: logs renders with the sum of the spectrum to `vis.log`.

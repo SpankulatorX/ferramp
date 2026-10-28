@@ -55,7 +55,7 @@ impl PluginTrack {
             .host(plugin.arch)
             .ok_or("the plugin host is not running")?;
         let (tx, rx) = mpsc::channel();
-        let stream = sys.register_stream(tx);
+        let stream = sys.register_stream(plugin.arch, tx);
         let fail = |e: String| {
             sys.unregister_stream(stream);
             e

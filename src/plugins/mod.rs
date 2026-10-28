@@ -67,7 +67,8 @@ pub type StreamTx = Sender<FromHost>;
 
 #[derive(Default)]
 struct Routes {
-    streams: HashMap<u32, StreamTx>,
+    /// Each stream, with the host (by architecture) that decodes it.
+    streams: HashMap<u32, (Arch, StreamTx)>,
 }
 
 /// What the host event threads share with the rest.
@@ -335,6 +336,11 @@ impl Plugins {
                     }
                     dispatch(ev, &hub);
                 }
+                // A host answering file information questions plays nothing:
+                // its crash must not touch what is playing.
+                if inputs_only {
+                    return;
+                }
                 // The host is gone: end every stream that was waiting on it.
                 let streams: Vec<StreamTx> = hub
                     .routes
@@ -342,7 +348,8 @@ impl Plugins {
                     .unwrap()
                     .streams
                     .values()
-                    .cloned()
+                    .filter(|(a, _)| *a == arch)
+                    .map(|(_, tx)| tx.clone())
                     .collect();
                 for s in streams {
                     let _ = s.send(FromHost::StreamFailed {
@@ -575,9 +582,14 @@ impl Plugins {
         }
     }
 
-    fn register_stream(&self, tx: StreamTx) -> u32 {
+    fn register_stream(&self, arch: Arch, tx: StreamTx) -> u32 {
         let id = self.next_stream.fetch_add(1, Ordering::SeqCst);
-        self.hub.routes.lock().unwrap().streams.insert(id, tx);
+        self.hub
+            .routes
+            .lock()
+            .unwrap()
+            .streams
+            .insert(id, (arch, tx));
         id
     }
 
@@ -831,7 +843,13 @@ fn dispatch(ev: FromHost, hub: &Hub) {
         _ => None,
     };
     if let Some(id) = stream_of(&ev) {
-        let tx = hub.routes.lock().unwrap().streams.get(&id).cloned();
+        let tx = hub
+            .routes
+            .lock()
+            .unwrap()
+            .streams
+            .get(&id)
+            .map(|(_, tx)| tx.clone());
         if let Some(tx) = tx {
             let _ = tx.send(ev);
         }
