@@ -36,6 +36,7 @@ const FRAME: Duration = Duration::from_millis(16);
 pub enum UserEvent {
     Wake,
     Picked(Pick, Vec<PathBuf>),
+    Classic(crate::classic_skin::Fetched),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -159,6 +160,7 @@ pub struct App {
     created: bool,
     exiting: bool,
     cli_skin: bool,
+    classic_busy: bool,
     tip: Option<Tooltip>,
     hover_tip: Option<(WinKind, String, Instant)>,
     next_frame: Instant,
@@ -215,6 +217,7 @@ impl App {
             created: false,
             exiting: false,
             cli_skin: false,
+            classic_busy: false,
             tip: None,
             hover_tip: None,
             next_frame: Instant::now(),
@@ -569,6 +572,14 @@ impl App {
         }
         if let Some(w) = self.wins.get(&WinKind::Main) {
             w.window.focus_window();
+        }
+        // Offer the original base skin once, to anyone still on the built-in one.
+        if !self.settings.get_bool("classic_offered", false)
+            && !self.cli_skin
+            && self.st.skin.path.is_none()
+        {
+            self.settings.set_bool("classic_offered", true);
+            self.open_classic_skin(el);
         }
         // Restore the playlist, then handle files given on the command line.
         let files = std::mem::take(&mut self.initial_files);
@@ -1499,14 +1510,25 @@ impl App {
         }
         let s = self.ui_scale;
         let main = self.st.main;
+        let (w, h) = (dialog.w * s, dialog.h * s);
+        let (mut x, mut y) = (main.x + 40, main.y + 40);
+        // Keep the dialog on the monitor that holds the main window.
+        if let Some(m) = el.available_monitors().find(|m| {
+            let (p, sz) = (m.position(), m.size());
+            main.x >= p.x
+                && main.y >= p.y
+                && main.x < p.x + sz.width as i32
+                && main.y < p.y + sz.height as i32
+        }) {
+            let (p, sz) = (m.position(), m.size());
+            x = x.min(p.x + sz.width as i32 - w - 8).max(p.x);
+            y = y.min(p.y + sz.height as i32 - h - 48).max(p.y);
+        }
         let attrs = Window::default_attributes()
             .with_title(dialog.title.clone())
             .with_resizable(false)
-            .with_inner_size(PhysicalSize::new(
-                (dialog.w * s) as u32,
-                (dialog.h * s) as u32,
-            ))
-            .with_position(PhysicalPosition::new(main.x + 40, main.y + 40))
+            .with_inner_size(PhysicalSize::new(w as u32, h as u32))
+            .with_position(PhysicalPosition::new(x, y))
             .with_window_icon(Some(app_icon()));
         let Ok(window) = el.create_window(attrs) else {
             return;
@@ -1517,6 +1539,72 @@ impl App {
             os.window.set_window_level(WindowLevel::AlwaysOnTop);
         }
         self.dialogs.push(DialogWin { dialog, os });
+    }
+
+    /// Shows the classic skin offer and fetches the original's preview.
+    fn open_classic_skin(&mut self, el: &ActiveEventLoop) {
+        if let Some(d) = self
+            .dialogs
+            .iter()
+            .find(|d| d.dialog.kind == DialogKind::ClassicSkin)
+        {
+            d.os.window.focus_window();
+            return;
+        }
+        let builtin = crate::render::docked(Skin::builtin());
+        self.open_dialog(el, Dialog::classic_skin(builtin));
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let r = crate::classic_skin::preview();
+            let _ = proxy.send_event(UserEvent::Classic(crate::classic_skin::Fetched::Preview(r)));
+        });
+    }
+
+    fn download_classic_skin(&mut self) {
+        if self.classic_busy {
+            return;
+        }
+        self.classic_busy = true;
+        self.classic_status("Downloading...");
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            let r = crate::classic_skin::download();
+            let _ = proxy.send_event(UserEvent::Classic(crate::classic_skin::Fetched::Skin(r)));
+        });
+    }
+
+    fn classic_status(&mut self, msg: &str) {
+        for d in &mut self.dialogs {
+            if d.dialog.kind == DialogKind::ClassicSkin {
+                d.dialog.set_status(msg);
+                d.os.window.request_redraw();
+            }
+        }
+    }
+
+    fn classic_fetched(&mut self, el: &ActiveEventLoop, f: crate::classic_skin::Fetched) {
+        use crate::classic_skin::Fetched;
+        match f {
+            Fetched::Preview(r) => {
+                for d in &mut self.dialogs {
+                    if d.dialog.kind == DialogKind::ClassicSkin {
+                        d.dialog.set_image("original", r);
+                        d.os.window.request_redraw();
+                        break;
+                    }
+                }
+            }
+            Fetched::Skin(Ok(path)) => {
+                self.classic_busy = false;
+                self.dialogs
+                    .retain(|d| d.dialog.kind != DialogKind::ClassicSkin);
+                self.load_skin(el, Some(path));
+            }
+            Fetched::Skin(Err(e)) => {
+                self.classic_busy = false;
+                self.classic_status(&format!("Download failed: {e}"));
+            }
+        }
     }
 
     fn dialog_index(&self, id: WindowId) -> Option<usize> {
@@ -2163,6 +2251,8 @@ impl App {
                 }
             }
             Cmd::GetMoreSkins => open_url("https://skins.webamp.org/"),
+            Cmd::ClassicSkin => self.open_classic_skin(el),
+            Cmd::ClassicSkinDownload => self.download_classic_skin(),
             Cmd::AddBookmark => {
                 if let Some(e) = st.playlist.current_entry() {
                     let b = (e.title.clone(), e.location());
@@ -2519,6 +2609,7 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             UserEvent::Wake => {}
             UserEvent::Picked(p, paths) => self.picked(el, p, paths),
+            UserEvent::Classic(f) => self.classic_fetched(el, f),
         }
     }
 

@@ -25,6 +25,8 @@ dirs = "7"
 ureq = { version = "3", default-features = false, features = ["gzip"] }
 rtrb = "0.4"
 arboard = { version = "3", default-features = false }
+# SHA-256 for the classic skin download; already built for TLS.
+ring = { version = "0.17", optional = true }
 
 [build-dependencies]
 winresource = "0.1"
@@ -32,7 +34,7 @@ winresource = "0.1"
 [features]
 default = ["https"]
 # TLS for https:// streams (needs a C compiler for the target when cross-building).
-https = ["ureq/rustls"]
+https = ["ureq/rustls", "dep:ring"]
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 x11rb = { version = "0.14", features = ["shape"] }

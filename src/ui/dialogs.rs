@@ -1,5 +1,6 @@
 //! Small dialogs drawn in the classic Windows style: About, Open Location,
-//! Jump to File, Jump to Time, File Info, Skin Browser and Preferences.
+//! Jump to File, Jump to Time, File Info, Skin Browser, Preferences and the
+//! classic skin offer.
 
 use std::path::PathBuf;
 
@@ -25,6 +26,7 @@ pub enum DialogKind {
     Bookmarks,
     PlaylistEntry,
     VisOptions,
+    ClassicSkin,
 }
 
 #[derive(Clone, Debug)]
@@ -62,6 +64,13 @@ pub enum Control {
         label: String,
         rect: Rect,
     },
+    /// A picture, or `note` centred in a sunken box until it arrives.
+    Image {
+        image: Option<Bitmap>,
+        note: String,
+        rect: Rect,
+        id: &'static str,
+    },
 }
 
 /// Something the dialog wants done.
@@ -88,6 +97,8 @@ pub struct Dialog {
     pub prefs: Prefs,
     pub eq_op: Option<crate::ui::EqLibOp>,
     pub vis: Option<(crate::ui::vis::VisMode, crate::ui::vis::VisOptions)>,
+    /// Index of the label that shows progress messages, if any.
+    status: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -119,6 +130,7 @@ impl Dialog {
             prefs: Prefs::default(),
             eq_op: None,
             vis: None,
+            status: None,
         }
     }
 
@@ -400,6 +412,105 @@ impl Dialog {
             default: true,
         });
         Dialog::new(DialogKind::About, "About Ferramp", 340, 192, c)
+    }
+
+    /// First-start offer to fetch the original base skin, with the built-in
+    /// skin on the left and the original's preview on the right.
+    pub fn classic_skin(builtin: Bitmap) -> Dialog {
+        let source = format!("Source: {} (101 KB)", crate::classic_skin::ITEM_PAGE);
+        let lines = [
+            "Ferramp comes with its own skin, drawn from scratch. The classic look most",
+            "people remember is the original Winamp base skin, which belongs to its",
+            "owners and cannot be included with Ferramp. Ferramp can download it for you",
+            "from the Internet Archive, where the preview on the right also comes from.",
+            &source,
+        ];
+        let mut c = vec![Control::Label {
+            text: "Use the classic look?".into(),
+            rect: r(16, 12, 570, 14),
+            bold: true,
+        }];
+        for (i, t) in lines.iter().enumerate() {
+            c.push(Control::Label {
+                text: t.to_string(),
+                rect: r(16, 34 + i as i32 * 16, 570, 14),
+                bold: false,
+            });
+        }
+        let (iw, ih) = (builtin.w, builtin.h);
+        let top = 136;
+        for (x, caption) in [(16, "Built-in skin"), (311, "Original base skin")] {
+            c.push(Control::Label {
+                text: caption.into(),
+                rect: r(x, top - 18, iw, 14),
+                bold: true,
+            });
+        }
+        c.push(Control::Image {
+            image: Some(builtin),
+            note: String::new(),
+            rect: r(16, top, iw, ih),
+            id: "builtin",
+        });
+        c.push(Control::Image {
+            image: None,
+            note: "Loading preview...".into(),
+            rect: r(311, top, iw, ih),
+            id: "original",
+        });
+        let by = top + ih + 14;
+        c.push(Control::Label {
+            text: "You can switch skins at any time with Alt+S.".into(),
+            rect: r(16, by + 4, 330, 14),
+            bold: false,
+        });
+        let status = c.len() - 1;
+        c.push(Control::Button {
+            label: "Download and use".into(),
+            rect: r(350, by, 120, 23),
+            id: "download",
+            default: true,
+        });
+        c.push(Control::Button {
+            label: "Keep built-in".into(),
+            rect: r(476, by, 110, 23),
+            id: "cancel",
+            default: false,
+        });
+        let mut d = Dialog::new(
+            DialogKind::ClassicSkin,
+            "Classic Look",
+            602,
+            by + 23 + 14,
+            c,
+        );
+        d.status = Some(status);
+        d
+    }
+
+    /// Fills an image control, or shows why it could not be loaded.
+    pub fn set_image(&mut self, which: &str, result: Result<Bitmap, String>) {
+        for c in &mut self.controls {
+            if let Control::Image {
+                image, note, id, ..
+            } = c
+                && *id == which
+            {
+                match result {
+                    Ok(b) => *image = Some(b),
+                    Err(e) => *note = format!("Preview unavailable: {e}"),
+                }
+                return;
+            }
+        }
+    }
+
+    pub fn set_status(&mut self, msg: &str) {
+        if let Some(i) = self.status
+            && let Some(Control::Label { text, .. }) = self.controls.get_mut(i)
+        {
+            *text = msg.to_string();
+        }
     }
 
     pub fn open_url(add: bool) -> Dialog {
@@ -734,6 +845,7 @@ impl Dialog {
                 None => Outcome::None,
             },
             (DialogKind::SkinBrowser, "folder") => Outcome::Run(vec![Cmd::LoadSkinDialog]),
+            (DialogKind::ClassicSkin, "download") => Outcome::Run(vec![Cmd::ClassicSkinDownload]),
             (DialogKind::EqPresets, "ok") => {
                 let op = self.eq_op.unwrap_or(crate::ui::EqLibOp::LoadPreset);
                 let typed = self.input_text().trim().to_string();
@@ -1006,6 +1118,29 @@ impl Dialog {
         for (i, c) in self.controls.iter().enumerate() {
             let focused = self.focus == Some(i);
             match c {
+                Control::Image {
+                    image, note, rect, ..
+                } => match image {
+                    Some(b) => out.blit(b, 0, 0, rect.w.min(b.w), rect.h.min(b.h), rect.x, rect.y),
+                    None => {
+                        sunken_field(out, *rect, rgb(0, 0, 0));
+                        let inner = Rect::new(rect.x + 8, rect.y, rect.w - 16, rect.h);
+                        let t = fonts.ellipsize(note, FONT, Weight::Regular, inner.w);
+                        let tw = fonts.measure(&t, FONT, Weight::Regular);
+                        let ty = rect.y + rect.h / 2 - 7;
+                        fonts.draw(
+                            out,
+                            &t,
+                            rect.x + (rect.w - tw) / 2,
+                            ty,
+                            FONT,
+                            Weight::Regular,
+                            WHITE,
+                            inner,
+                            true,
+                        );
+                    }
+                },
                 Control::Label { text, rect, bold } => {
                     let w = if *bold { Weight::Bold } else { Weight::Regular };
                     let t = fonts.ellipsize(text, FONT, w, rect.w);

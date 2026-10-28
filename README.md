@@ -84,6 +84,12 @@ the Skins folder of an existing classic player installation (Windows or
 Wine). Missing bitmaps fall back to the built-in skin, the way classic
 skins always worked.
 
+The original base skin is not ours to ship. On first start Ferramp offers
+to download it from the Internet Archive
+(archive.org/details/winampskin_base_2_91), shows it next to the built-in
+skin, and checks the download against a fixed SHA-256 before using it. The
+same offer is under *Skins > Classic Look*.
+
 ## Keyboard
 
 | Key | Action |

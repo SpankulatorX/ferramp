@@ -47,6 +47,26 @@ fn render(
     b
 }
 
+/// Main window, equalizer and playlist docked in one image, at 1x.
+pub fn docked(skin: Skin) -> Bitmap {
+    let mut st = State::new(Engine::headless(), skin);
+    st.focused = Some(WinKind::Main);
+    let (mut main, mut eq, mut pl) = (MainWin::new(), EqWin::new(), PlWin::new());
+    let parts: Vec<Bitmap> = [WinKind::Main, WinKind::Eq, WinKind::Playlist]
+        .into_iter()
+        .map(|k| render(&mut st, k, &mut main, &mut eq, &mut pl))
+        .collect();
+    let w = parts.iter().map(|b| b.w).max().unwrap_or(0);
+    let h = parts.iter().map(|b| b.h).sum();
+    let mut out = Bitmap::new(w, h, 0xFF00_0000);
+    let mut y = 0;
+    for b in &parts {
+        out.blit(b, 0, 0, b.w, b.h, 0, y);
+        y += b.h;
+    }
+    out
+}
+
 /// Fixed scenarios matching the reference screenshots (tools/webamp shots).
 fn render_scenarios(dir: &Path, skin: &Skin) {
     let skin_path = skin.path.clone();

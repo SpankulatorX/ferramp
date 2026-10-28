@@ -115,6 +115,9 @@ pub enum Cmd {
     VisOptionsDialog,
     ToggleVisPlugin,
     GetMoreSkins,
+    /// Offer to download the original base skin.
+    ClassicSkin,
+    ClassicSkinDownload,
     AddBookmark,
     BookmarkSelected,
     EditBookmarks,

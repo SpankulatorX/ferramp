@@ -167,6 +167,7 @@ pub fn build(id: MenuId, ctx: &MenuContext) -> Vec<Item> {
         MenuId::Skins => {
             let mut v = vec![
                 act("S&kin Browser...", "Alt+S", Cmd::SkinBrowser),
+                act("&Classic Look...", "", Cmd::ClassicSkin),
                 Item::Sep,
             ];
             v.push(check(

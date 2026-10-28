@@ -18,6 +18,7 @@ macro_rules! debug {
 
 mod app;
 mod audio;
+mod classic_skin;
 mod config;
 mod gfx;
 mod metadata;
