@@ -1,6 +1,6 @@
 # Maintainer: Ferramp contributors <https://github.com/SpankulatorX/ferramp>
 pkgname=ferramp
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc='Classic skinnable audio player (Winamp 2 look and feel, written in Rust)'
 arch=('x86_64' 'aarch64')
@@ -11,7 +11,7 @@ makedepends=('cargo')
 # ring (TLS for internet radio) fails to link with makepkg's default LTO.
 options=('!lto')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('cf5bd8db586127f179ace9d100597da95093bccdd9ed5d2494d2f2df4319cbc9')
+sha256sums=('5cc64e57db52d14ad58976cec5fc34fa077a0833a53e6918e2629648d7fe9827')
 
 prepare() {
   cd "$pkgname-$pkgver"

@@ -1,6 +1,6 @@
 pkgbase = ferramp-bin
 	pkgdesc = Classic skinnable audio player (prebuilt binary)
-	pkgver = 0.1.0
+	pkgver = 0.1.1
 	pkgrel = 1
 	url = https://github.com/SpankulatorX/ferramp
 	arch = x86_64
@@ -14,9 +14,9 @@ pkgbase = ferramp-bin
 	conflicts = ferramp
 	options = !strip
 	options = !debug
-	source_x86_64 = ferramp-bin-0.1.0-x86_64.tar.gz::https://github.com/SpankulatorX/ferramp/releases/download/v0.1.0/ferramp-v0.1.0-linux-x86_64.tar.gz
-	sha256sums_x86_64 = 134cefcd7f61f81ebdaa56f2697839882220e81e9faa8837bd2cecf48e31c36c
-	source_aarch64 = ferramp-bin-0.1.0-aarch64.tar.gz::https://github.com/SpankulatorX/ferramp/releases/download/v0.1.0/ferramp-v0.1.0-linux-aarch64.tar.gz
-	sha256sums_aarch64 = 5c8b5865005612fa96f04c75cff7b21260178b90b8f19ad8305a2f95a8e79daa
+	source_x86_64 = ferramp-bin-0.1.1-x86_64.tar.gz::https://github.com/SpankulatorX/ferramp/releases/download/v0.1.1/ferramp-v0.1.1-linux-x86_64.tar.gz
+	sha256sums_x86_64 = 8637251bc8c1d4d486ad90d1a417e4a5fdc679b603b57027820f9cbc5b7a77b3
+	source_aarch64 = ferramp-bin-0.1.1-aarch64.tar.gz::https://github.com/SpankulatorX/ferramp/releases/download/v0.1.1/ferramp-v0.1.1-linux-aarch64.tar.gz
+	sha256sums_aarch64 = 6c0db087738d45454e32bf79d53f692567304825dca2c2398c5b029151d0bef0
 
 pkgname = ferramp-bin
