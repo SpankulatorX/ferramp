@@ -83,6 +83,8 @@ struct Hub {
     progress: Mutex<(Instant, Option<String>)>,
     /// Hosts where a general plugin asked for analyzer data.
     pcm_for: Mutex<Vec<Arch>>,
+    /// The file name of the module the last host crash happened in.
+    last_crash: Mutex<Option<String>>,
 }
 
 pub struct Plugins {
@@ -134,6 +136,7 @@ impl Plugins {
                 log_dir,
                 progress: Mutex::new((Instant::now(), None)),
                 pcm_for: Mutex::new(Vec::new()),
+                last_crash: Mutex::new(None),
             }),
             skip: Mutex::new(HashMap::new()),
             dsp: Mutex::new(None),
@@ -494,26 +497,47 @@ impl Plugins {
 
     pub fn file_info(&self, path: &Path) -> Option<FileInfo> {
         let p = self.input_for(path)?;
-        if self.no_info.lock().unwrap().contains(&p.info.file) {
-            return None;
-        }
-        let h = self.info_host(p.arch)?;
-        match h.request(
-            &ToHost::FileInfo {
-                plugin: p.info.id,
-                path: path.to_string_lossy().into_owned(),
-            },
-            Duration::from_secs(10),
-        ) {
-            Ok(FromHost::Info(i)) => Some(i),
-            Err(HostError::Dead) | Err(HostError::Timeout) => {
-                // Some plugins crash when asked about a file they are not
-                // playing; play them, but do not ask again.
-                self.no_info.lock().unwrap().push(p.info.file.clone());
-                None
+        // Questions run concurrently: when the host dies, the plugin that
+        // crashed is the one the host names, not necessarily this one.
+        for _ in 0..2 {
+            if self.no_info.lock().unwrap().contains(&p.info.file) {
+                return None;
             }
-            _ => None,
+            let h = self.info_host(p.arch)?;
+            match h.request(
+                &ToHost::FileInfo {
+                    plugin: p.info.id,
+                    path: path.to_string_lossy().into_owned(),
+                },
+                Duration::from_secs(10),
+            ) {
+                Ok(FromHost::Info(i)) => return Some(i),
+                Err(HostError::Dead) => {
+                    // Some plugins crash when asked about a file they are not
+                    // playing; play them, but do not ask again.
+                    // A crash in a system library is blamed on this plugin.
+                    let culprit = self
+                        .hub
+                        .last_crash
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .filter(|m| self.by_file(m).is_some())
+                        .unwrap_or_else(|| p.info.file.clone());
+                    let mine = culprit.eq_ignore_ascii_case(&p.info.file);
+                    self.no_info.lock().unwrap().push(culprit);
+                    if mine {
+                        return None;
+                    }
+                }
+                Err(HostError::Timeout) => {
+                    self.no_info.lock().unwrap().push(p.info.file.clone());
+                    return None;
+                }
+                _ => return None,
+            }
         }
+        None
     }
 
     pub fn info_box(&self, path: &Path) -> bool {
@@ -874,6 +898,12 @@ fn dispatch(ev: FromHost, hub: &Hub) {
                 *hub.progress.lock().unwrap() = (Instant::now(), Some(f.to_string()));
             } else if s.starts_with("loaded ") {
                 *hub.progress.lock().unwrap() = (Instant::now(), None);
+            } else if let Some(rest) = s.strip_prefix("crash: ")
+                && let Some((_, m)) = rest.rsplit_once(" in ")
+            {
+                // "crash: exception ... at 0x... in in_x.dll+0x1234"
+                let module = m.split('+').next().unwrap_or(m).trim().to_string();
+                *hub.last_crash.lock().unwrap() = Some(module);
             }
             use std::io::Write;
             if let Ok(mut f) = std::fs::OpenOptions::new()

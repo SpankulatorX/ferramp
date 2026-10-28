@@ -3308,6 +3308,16 @@ fn touching(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> bool {
         || (overlap_x && (ay + ah == by || by + bh == ay))
 }
 
+/// A path for display, with the home folder written as `~` on Unix.
+fn short_path(p: &Path) -> String {
+    if cfg!(unix)
+        && let Some(h) = dirs::home_dir()
+        && let Ok(rest) = p.strip_prefix(&h)
+    {
+        return format!("~/{}", rest.display());
+    }
+    p.display().to_string()
+}
 fn walk(dir: &Path, out: &mut Vec<PathBuf>, depth: u32) {
     if depth > 16 {
         return;
@@ -3966,7 +3976,7 @@ impl App {
             .as_ref()
             .map(|s| s.skipped())
             .unwrap_or_default();
-        let title = format!("{} ({})", p.info.description, p.path.display());
+        let title = format!("{} ({})", p.info.description, short_path(&p.path));
         let detail = if let Some(why) = skip.get(&p.info.file.to_lowercase()) {
             format!("Not loaded: {why}. Enable it and press Reload to try again.")
         } else if let Some(e) = &p.info.error {

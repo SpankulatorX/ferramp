@@ -106,6 +106,8 @@ formats such as Opus, tracker modules, SID, VGM and game audio), output
 (`out_*.dll`), DSP and effects (`dsp_*.dll`), visualization
 (`vis_*.dll`) and general purpose (`gen_*.dll`).
 
+![Ferramp playing a VGM file through in_vgm, with Big Clock running and the plug-in list open](docs/plugins.png)
+
 - Put the DLL files in the `Plugins` folder inside the configuration
   folder (`~/.config/ferramp/Plugins` on Linux, `%APPDATA%\ferramp\Plugins`
   on Windows, `~/Library/Application Support/ferramp/Plugins` on macOS).
@@ -133,6 +135,8 @@ formats such as Opus, tracker modules, SID, VGM and game audio), output
   in the list. A plug-in that shows a dialog while loading is given time
   for you to answer it. When a plug-in cannot load because a library it
   needs is missing, the list names that library.
+
+![Big Clock's show and hide entry in Ferramp's main menu](docs/plugin-menu.png)
 
 Tested so far, under Wine on Linux: files played through `in_opus`,
 `in_openmpt`, `in_vgm`, `in_sidplay2` and `in_adlib`; `dsp_bs2b` and
