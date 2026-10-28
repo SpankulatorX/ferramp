@@ -5,25 +5,28 @@ pkgrel=1
 pkgdesc='Classic skinnable audio player (prebuilt binary)'
 arch=('x86_64' 'aarch64')
 url='https://github.com/SpankulatorX/ferramp'
-license=('MIT' 'Apache-2.0')
-depends=('alsa-lib' 'hicolor-icon-theme')
+license=('MIT OR Apache-2.0')
+depends=('alsa-lib' 'gcc-libs' 'glibc' 'hicolor-icon-theme')
 provides=('ferramp')
 conflicts=('ferramp')
+options=('!strip' '!debug')
 # Release tarballs are named ferramp-<tag>-linux-<arch>.tar.gz,
 # e.g. ferramp-v0.1.0-linux-x86_64.tar.gz for tag v0.1.0.
 source_x86_64=("$pkgname-$pkgver-x86_64.tar.gz::$url/releases/download/v$pkgver/ferramp-v$pkgver-linux-x86_64.tar.gz")
 source_aarch64=("$pkgname-$pkgver-aarch64.tar.gz::$url/releases/download/v$pkgver/ferramp-v$pkgver-linux-aarch64.tar.gz")
-sha256sums_x86_64=('SKIP')
-sha256sums_aarch64=('SKIP')
+sha256sums_x86_64=('134cefcd7f61f81ebdaa56f2697839882220e81e9faa8837bd2cecf48e31c36c')
+sha256sums_aarch64=('5c8b5865005612fa96f04c75cff7b21260178b90b8f19ad8305a2f95a8e79daa')
 
 package() {
-  # The tarball contains a top-level ferramp-<tag>-linux-<arch>/ directory
-  # with the binary, install.sh, ferramp.desktop and icons/.
-  install -Dm755 "$srcdir"/ferramp-v$pkgver-linux-*/ferramp "$pkgdir/usr/bin/ferramp"
-  install -Dm644 "$srcdir"/ferramp-v$pkgver-linux-*/ferramp.desktop \
-    "$pkgdir/usr/share/applications/ferramp.desktop"
+  # The tarball contains a top-level ferramp-v<version>-linux-<arch>/ directory
+  # with the binary, install.sh, ferramp.desktop, icons/ and the licence files.
+  cd "ferramp-v$pkgver-linux-$CARCH"
+  install -Dm755 ferramp "$pkgdir/usr/bin/ferramp"
+  install -Dm644 ferramp.desktop "$pkgdir/usr/share/applications/ferramp.desktop"
   for size in 16 32 48 64 128 256; do
-    install -Dm644 "$srcdir"/ferramp-v$pkgver-linux-*/icons/ferramp-$size.png \
+    install -Dm644 "icons/ferramp-$size.png" \
       "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/ferramp.png"
   done
+  install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname" README.md NOTICE
+  install -Dm644 -t "$pkgdir/usr/share/licenses/$pkgname" LICENSE-MIT LICENSE-APACHE NOTICE
 }

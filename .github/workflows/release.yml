@@ -29,19 +29,34 @@ jobs:
       - run: cargo build --release --locked
       - run: cargo test --release --locked
       - name: Install appimagetool
+        # Pinned releases with checksums: this job can write to the repository.
         run: |
           case "${{ matrix.arch }}" in
-            x86_64) ai_arch=x86_64 ;;
-            aarch64) ai_arch=aarch64 ;;
+            x86_64)
+              tool_sha=ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+              runtime_sha=2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d ;;
+            aarch64)
+              tool_sha=f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158
+              runtime_sha=00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444 ;;
           esac
-          curl -fsSL -o /tmp/appimagetool \
-            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${ai_arch}.AppImage"
-          chmod +x /tmp/appimagetool
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o appimagetool.AppImage \
+            "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-${{ matrix.arch }}.AppImage"
+          curl -fsSL -o appimage-runtime \
+            "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-${{ matrix.arch }}"
+          printf '%s  %s\n' "$tool_sha" appimagetool.AppImage "$runtime_sha" appimage-runtime | sha256sum -c -
           # appimagetool is itself an AppImage; extract it on runners without FUSE.
-          (cd /tmp && ./appimagetool --appimage-extract >/dev/null)
-          echo "/tmp/squashfs-root" >> "$GITHUB_PATH"
+          chmod +x appimagetool.AppImage
+          ./appimagetool.AppImage --appimage-extract >/dev/null
+          echo "$RUNNER_TEMP/squashfs-root/usr/bin" >> "$GITHUB_PATH"
+          echo "APPIMAGE_RUNTIME=$RUNNER_TEMP/appimage-runtime" >> "$GITHUB_ENV"
       - name: Package
         run: |
+          version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
+            exit 1
+          fi
           name=ferramp-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}
           mkdir -p "dist/$name/icons"
           cp target/release/ferramp packaging/linux/install.sh assets/ferramp.desktop \

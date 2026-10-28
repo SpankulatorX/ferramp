@@ -5,20 +5,31 @@ pkgrel=1
 pkgdesc='Classic skinnable audio player (Winamp 2 look and feel, written in Rust)'
 arch=('x86_64' 'aarch64')
 url='https://github.com/SpankulatorX/ferramp'
-license=('MIT' 'Apache-2.0')
-depends=('alsa-lib' 'hicolor-icon-theme')
+license=('MIT OR Apache-2.0')
+depends=('alsa-lib' 'gcc-libs' 'glibc' 'hicolor-icon-theme')
 makedepends=('cargo')
+# ring (TLS for internet radio) fails to link with makepkg's default LTO.
+options=('!lto')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('cf5bd8db586127f179ace9d100597da95093bccdd9ed5d2494d2f2df4319cbc9')
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
 
 build() {
   cd "$pkgname-$pkgver"
-  cargo build --release --locked
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release
 }
 
 check() {
   cd "$pkgname-$pkgver"
-  cargo test --release --locked
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen --release
 }
 
 package() {
@@ -29,7 +40,6 @@ package() {
     install -Dm644 "assets/icons/ferramp-$size.png" \
       "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/ferramp.png"
   done
-  install -Dm644 "README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
-  install -Dm644 "LICENSE-MIT" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
-  install -Dm644 "LICENSE-APACHE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+  install -Dm644 -t "$pkgdir/usr/share/doc/$pkgname" README.md NOTICE
+  install -Dm644 -t "$pkgdir/usr/share/licenses/$pkgname" LICENSE-MIT LICENSE-APACHE NOTICE
 }

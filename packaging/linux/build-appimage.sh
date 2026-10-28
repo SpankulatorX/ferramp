@@ -1,7 +1,8 @@
 #!/bin/sh
 # Builds a Ferramp .AppImage from an already-compiled release binary.
 # Usage: packaging/linux/build-appimage.sh [target/release/ferramp] [output-dir]
-# Needs: appimagetool (https://github.com/AppImage/appimagetool).
+# Needs: appimagetool (https://github.com/AppImage/appimagetool). Set
+# APPIMAGE_RUNTIME to a runtime file to stop appimagetool downloading one.
 # The AppImage runs on systems with ALSA and glibc >= 2.35.
 set -eu
 
@@ -31,14 +32,15 @@ esac
 workdir=$(mktemp -d)
 trap 'rm -rf "$workdir"' EXIT INT TERM
 appdir="$workdir/Ferramp.AppDir"
-mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications" "$appdir/usr/share/icons/hicolor/scalable/apps"
+mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications" "$appdir/usr/share/doc/ferramp"
 
 install -m755 "$bin" "$appdir/usr/bin/ferramp"
 install -m644 "$root/assets/ferramp.desktop" "$appdir/usr/share/applications/ferramp.desktop"
 install -m644 "$root/assets/ferramp.desktop" "$appdir/ferramp.desktop"
 install -m644 "$root/assets/icons/ferramp-256.png" "$appdir/ferramp.png"
-install -m644 "$root/assets/icons/ferramp-256.png" \
-    "$appdir/usr/share/icons/hicolor/scalable/apps/ferramp.png"
+for f in README.md LICENSE-MIT LICENSE-APACHE NOTICE; do
+    install -m644 "$root/$f" "$appdir/usr/share/doc/ferramp/$f"
+done
 for size in 16 32 48 64 128 256; do
     dir="$appdir/usr/share/icons/hicolor/${size}x${size}/apps"
     mkdir -p "$dir"
@@ -55,7 +57,8 @@ EOF
 chmod +x "$appdir/AppRun"
 
 mkdir -p "$outdir"
-# appimagetool derives the file name from $VERSION / $ARCH when set.
-VERSION="$version" ARCH="$appimage_arch" appimagetool "$appdir" \
+set --
+[ -n "${APPIMAGE_RUNTIME:-}" ] && set -- --runtime-file "$APPIMAGE_RUNTIME"
+VERSION="$version" ARCH="$appimage_arch" appimagetool "$@" "$appdir" \
     "$outdir/Ferramp-${version}-linux-${arch}.AppImage"
 echo "Built $outdir/Ferramp-${version}-linux-${arch}.AppImage"

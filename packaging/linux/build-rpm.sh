@@ -35,6 +35,7 @@ cp "$bin" "$topdir/SOURCES/ferramp"
 cp "$root/assets/ferramp.desktop" "$topdir/SOURCES/ferramp.desktop"
 mkdir -p "$topdir/SOURCES/icons"
 cp "$root"/assets/icons/ferramp-*.png "$topdir/SOURCES/icons/"
+cp "$root/README.md" "$root/LICENSE-MIT" "$root/LICENSE-APACHE" "$root/NOTICE" "$topdir/SOURCES/"
 sed "s/@VERSION@/$version/g" "$root/packaging/linux/ferramp.spec" > "$topdir/SPECS/ferramp.spec"
 
 rpmbuild --define "_topdir $topdir" -bb "$topdir/SPECS/ferramp.spec"

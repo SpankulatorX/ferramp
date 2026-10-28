@@ -43,7 +43,7 @@ for size in 16 32 48 64 128 256; do
 done
 install -m644 "$root/README.md" "$pkgdir/usr/share/doc/ferramp/README.md"
 for f in LICENSE-MIT LICENSE-APACHE NOTICE; do
-    [ -f "$root/$f" ] && install -m644 "$root/$f" "$pkgdir/usr/share/doc/ferramp/$f"
+    install -m644 "$root/$f" "$pkgdir/usr/share/doc/ferramp/$f"
 done
 cat > "$pkgdir/usr/share/doc/ferramp/copyright" <<EOF
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
@@ -52,9 +52,9 @@ Source: https://github.com/SpankulatorX/ferramp
 Files: *
 Copyright: Ferramp contributors
 License: MIT or Apache-2.0
- See /usr/share/common-licenses/MIT and
- /usr/share/common-licenses/Apache-2.0,
- or the files LICENSE-MIT and LICENSE-APACHE shipped with this package.
+ See LICENSE-MIT and LICENSE-APACHE in this directory, and NOTICE
+ for third-party credits. The Apache licence is also in
+ /usr/share/common-licenses/Apache-2.0.
 EOF
 
 installed_size=$(du -sk "$pkgdir/usr" | cut -f1)
@@ -64,7 +64,9 @@ Version: $version
 Section: sound
 Priority: optional
 Architecture: $debarch
-Maintainer: Ferramp contributors <https://github.com/SpankulatorX/ferramp>
+Maintainer: Jonas Millard <126339103+SpankulatorX@users.noreply.github.com>
+Installed-Size: $installed_size
+Homepage: https://github.com/SpankulatorX/ferramp
 Depends: libasound2 | libasound2t64, libc6 (>= 2.35)
 Description: Classic skinnable audio player
  Ferramp is a cross-platform audio player in Rust that recreates the
@@ -73,7 +75,6 @@ Description: Classic skinnable audio player
  Vorbis, FLAC, WAV, AIFF, AAC/M4A, ALAC and internet radio, and loads
  classic .wsz skins.
 EOF
-echo "$installed_size" > /dev/null
 
 mkdir -p "$outdir"
 deb="$outdir/ferramp-${version}-linux-${debarch}.deb"

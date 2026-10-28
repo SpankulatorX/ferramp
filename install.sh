@@ -4,112 +4,128 @@
 #   curl -fsSL https://raw.githubusercontent.com/SpankulatorX/ferramp/main/install.sh | sh
 #
 # Picks the right artifact for your system:
-#   Debian/Ubuntu  -> .deb       Fedora/RHEL/openSUSE -> .rpm
-#   Arch (yay/paru)-> AUR        anything else       -> tarball (~/.local) or AppImage
+#   Debian/Ubuntu -> .deb    Fedora/RHEL/openSUSE -> .rpm
+#   anything else -> tarball installed into ~/.local
+# Every download is checked against the release's SHA256SUMS.txt.
 #
-# Env overrides: TAG (default: latest), PREFIX (tarball/AppImage install dir),
-# DESTDIR for AppImage file name, --appimage to force the AppImage.
+# Options: --appimage or --tarball to force that format.
+# Environment: TAG (default: latest release), PREFIX (tarball/AppImage
+# install dir, default ~/.local).
 set -eu
 
 REPO=SpankulatorX/ferramp
 TAG=${TAG:-latest}
 PREFIX=${PREFIX:-"$HOME/.local"}
 
-force_appimage=0
+force=
 for a in "$@"; do
     case "$a" in
-        --appimage) force_appimage=1 ;;
-        -h|--help) echo "Usage: install.sh [--appimage]"; exit 0 ;;
+        --appimage) force=appimage ;;
+        --tarball) force=tarball ;;
+        -h|--help) echo "Usage: install.sh [--appimage | --tarball]"; exit 0 ;;
+        *) echo "error: unknown option: $a" >&2; exit 1 ;;
     esac
 done
 
 arch=$(uname -m)
 case "$arch" in
-    x86_64) arch=x86_64 ;;
-    aarch64|arm64) arch=aarch64 ;;
+    x86_64) debarch=amd64 ;;
+    aarch64|arm64) arch=aarch64; debarch=arm64 ;;
     *) echo "error: unsupported architecture: $arch" >&2; exit 1 ;;
 esac
-debarch=$arch; [ "$arch" = "x86_64" ] && debarch=amd64; [ "$arch" = "aarch64" ] && debarch=arm64
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# Resolve "latest" to a tag like v0.1.0 via the GitHub API (no jq needed).
-resolve_tag() {
-    if [ "$TAG" != "latest" ]; then echo "$TAG"; return; fi
+if have curl; then
+    fetch() { curl -fsSL -o "$2" "$1"; }
+elif have wget; then
+    fetch() { wget -qO "$2" "$1"; }
+else
+    echo "error: need curl or wget" >&2; exit 1
+fi
+
+if have sha256sum; then
+    sha256() { sha256sum "$1" | cut -d' ' -f1; }
+elif have shasum; then
+    sha256() { shasum -a 256 "$1" | cut -d' ' -f1; }
+else
+    echo "error: need sha256sum or shasum to verify the download" >&2; exit 1
+fi
+
+as_root() {
+    if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi
+}
+
+# Resolve "latest" to a tag like v0.1.0 by following the release redirect.
+tag=$TAG
+if [ "$tag" = latest ]; then
     if have curl; then
         tag=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
-            "https://github.com/$REPO/releases/latest" 2>/dev/null | sed 's#.*/##')
-        [ -n "$tag" ] && { echo "$tag"; return; }
+            "https://github.com/$REPO/releases/latest")
+        tag=${tag##*/}
+    else
+        tag=$(wget -qS --max-redirect=0 -O /dev/null \
+            "https://github.com/$REPO/releases/latest" 2>&1 |
+            sed -n 's#^ *[Ll]ocation: .*/tag/##p' | tr -d '\r' | tail -n1)
     fi
-    echo "latest"
-}
-
-download() {
-    url=$1; out=$2
-    if have curl; then curl -fsSL -o "$out" "$url"
-    elif have wget; then wget -qO "$out" "$url"
-    else echo "error: need curl or wget" >&2; exit 1; fi
-}
-
-tag=$(resolve_tag)
-if [ "$tag" = "latest" ]; then
-    base="https://github.com/$REPO/releases/latest/download"
-else
-    base="https://github.com/$REPO/releases/download/$tag"
 fi
+case "$tag" in
+    v[0-9]*) ;;
+    *) echo "error: could not find the latest release; set TAG=vX.Y.Z" >&2; exit 1 ;;
+esac
+version=${tag#v}
+base="https://github.com/$REPO/releases/download/$tag"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT INT TERM
+fetch "$base/SHA256SUMS.txt" "$tmp/SHA256SUMS.txt"
+
+# Downloads a release file into $tmp and checks it against SHA256SUMS.txt.
+get() {
+    expected=
+    while read -r line_sum line_file; do
+        if [ "$line_file" = "$1" ] || [ "$line_file" = "*$1" ]; then expected=$line_sum; fi
+    done < "$tmp/SHA256SUMS.txt"
+    if [ -z "$expected" ]; then
+        echo "error: $1 is not part of release $tag" >&2; exit 1
+    fi
+    echo "Downloading $1 ..."
+    fetch "$base/$1" "$tmp/$1"
+    if [ "$(sha256 "$tmp/$1")" != "$expected" ]; then
+        echo "error: checksum mismatch for $1" >&2; exit 1
+    fi
+}
 
 install_tarball() {
-    echo "Installing Ferramp $tag ($arch) to $PREFIX ..."
-    download "$base/ferramp-${tag}-linux-${arch}.tar.gz" "$tmp/ferramp.tar.gz"
-    tar -xzf "$tmp/ferramp.tar.gz" -C "$tmp"
-    # The tarball has a top-level dir with install.sh; reuse it.
-    PREFIX="$PREFIX" sh "$tmp"/ferramp-*/install.sh
+    name="ferramp-$tag-linux-$arch"
+    get "$name.tar.gz"
+    tar -xzf "$tmp/$name.tar.gz" -C "$tmp"
+    # The tarball's own install.sh does the ~/.local install.
+    PREFIX="$PREFIX" sh "$tmp/$name/install.sh"
 }
 
 install_appimage() {
-    echo "Installing Ferramp AppImage $tag ($arch) ..."
-    mkdir -p "$PREFIX/bin"
-    download "$base/Ferramp-${tag#v}-linux-${arch}.AppImage" "$PREFIX/bin/Ferramp.AppImage"
-    chmod +x "$PREFIX/bin/Ferramp.AppImage"
+    file="Ferramp-$version-linux-$arch.AppImage"
+    get "$file"
+    install -Dm755 "$tmp/$file" "$PREFIX/bin/Ferramp.AppImage"
     echo "Installed $PREFIX/bin/Ferramp.AppImage"
-    echo "Run it with: $PREFIX/bin/Ferramp.AppImage"
 }
 
-# Explicit opt-out to the portable AppImage.
-if [ "$force_appimage" = "1" ]; then install_appimage; exit 0; fi
+case "$force" in
+    appimage) install_appimage; exit 0 ;;
+    tarball) install_tarball; exit 0 ;;
+esac
 
-# Native system packages where we can use them.
 if [ -f /etc/debian_version ] && have apt-get; then
-    echo "Detected Debian/Ubuntu: installing the .deb ..."
-    download "$base/ferramp-${tag#v}-linux-${debarch}.deb" "$tmp/ferramp.deb"
-    if [ "$(id -u)" = "0" ]; then apt-get install -y "$tmp/ferramp.deb"
-    else sudo apt-get install -y "$tmp/ferramp.deb"; fi
-    exit 0
+    file="ferramp-$version-linux-$debarch.deb"
+    get "$file"
+    as_root apt-get install -y "$tmp/$file"
+elif have dnf || have yum || have zypper; then
+    file="ferramp-$version-linux-$arch.rpm"
+    get "$file"
+    if have dnf; then as_root dnf install -y "$tmp/$file"
+    elif have zypper; then as_root zypper --non-interactive install --allow-unsigned-rpm "$tmp/$file"
+    else as_root yum install -y "$tmp/$file"; fi
+else
+    install_tarball
 fi
-if have dnf || have yum || have zypper; then
-    echo "Detected RPM distro: installing the .rpm ..."
-    download "$base/ferramp-${tag#v}-linux-${arch}.rpm" "$tmp/ferramp.rpm"
-    if have dnf; then
-        if [ "$(id -u)" = "0" ]; then dnf install -y "$tmp/ferramp.rpm"
-        else sudo dnf install -y "$tmp/ferramp.rpm"; fi
-    elif have yum; then
-        if [ "$(id -u)" = "0" ]; then yum install -y "$tmp/ferramp.rpm"
-        else sudo yum install -y "$tmp/ferramp.rpm"; fi
-    else
-        if [ "$(id -u)" = "0" ]; then zypper --non-interactive install "$tmp/ferramp.rpm"
-        else sudo zypper --non-interactive install "$tmp/ferramp.rpm"; fi
-    fi
-    exit 0
-fi
-if have pacman && (have yay || have paru); then
-    echo "Detected Arch: installing from the AUR ..."
-    if have yay; then yay -S --noconfirm ferramp-bin
-    else paru -S --noconfirm ferramp-bin; fi
-    exit 0
-fi
-
-# Fallback: user-space tarball install (works everywhere with glibc >= 2.35).
-install_tarball

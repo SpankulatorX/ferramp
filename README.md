@@ -41,7 +41,8 @@ None of them is code-signed: on Windows SmartScreen may ask you to
 confirm, and on macOS you right-click the app and choose Open the first
 time.
 
-One-liner (Linux: picks the .deb, .rpm, AUR or tarball for you):
+One-liner for Linux (picks the .deb, .rpm or tarball for you and checks
+it against the release checksums):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/SpankulatorX/ferramp/main/install.sh | sh
@@ -50,9 +51,9 @@ curl -fsSL https://raw.githubusercontent.com/SpankulatorX/ferramp/main/install.s
 | Distro | Install |
 | --- | --- |
 | Debian / Ubuntu | Download `ferramp-<version>-linux-amd64.deb` (ARM64: `-arm64.deb`) and `sudo apt install ./ferramp-*.deb` |
-| Fedora / RHEL / openSUSE | Download `ferramp-<version>-linux-x86_64.rpm` (ARM64: `-aarch64.rpm`) and `sudo dnf install ./ferramp-*.rpm` |
-| Arch | `yay -S ferramp-bin` (or `ferramp` to build from source) — see `packaging/aur/` |
-| Anything else | Download `Ferramp-<version>-linux-<arch>.AppImage`, `chmod +x` it and run it — or unpack the `.tar.gz` and run `./install.sh` for a `~/.local` install with a menu entry |
+| Fedora / RHEL / openSUSE | Download `ferramp-<version>-linux-x86_64.rpm` (ARM64: `-aarch64.rpm`) and `sudo dnf install ./ferramp-*.rpm` (openSUSE: `sudo zypper install --allow-unsigned-rpm ./ferramp-*.rpm`) |
+| Arch | `makepkg -si` in `packaging/aur/ferramp-bin` (or `packaging/aur/ferramp` to build from source) |
+| Anything else | Download `Ferramp-<version>-linux-<arch>.AppImage`, `chmod +x` it and run it, or unpack the `.tar.gz` and run `./install.sh` for a `~/.local` install with a menu entry |
 
 Linux needs ALSA (or PipeWire/Pulse with the ALSA plug-in), an X11 or
 XWayland display and glibc 2.35 or newer (Ubuntu 22.04, Debian 12,

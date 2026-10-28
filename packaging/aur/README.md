@@ -1,27 +1,15 @@
 # AUR packages
 
-Two Arch User Repository packages are maintained from the files in this
-directory:
+These are the build files for two Arch User Repository packages. They
+are not published on the AUR yet; until they are, build them locally
+with `makepkg -si` as shown below.
 
 | Package | Directory | What it does |
 | --- | --- | --- |
 | `ferramp` | `ferramp/` | Builds from source with `cargo build --release` |
 | `ferramp-bin` | `ferramp-bin/` | Installs the prebuilt binary from the GitHub release tarball |
 
-Install with an AUR helper:
-
-```sh
-yay -S ferramp        # build from source
-yay -S ferramp-bin    # prebuilt binary (faster)
-```
-
-or with `paru`:
-
-```sh
-paru -S ferramp-bin
-```
-
-Manual install:
+Install from this directory:
 
 ```sh
 cd packaging/aur/ferramp-bin
@@ -40,13 +28,12 @@ makepkg --printsrcinfo > .SRCINFO
 git -C /path/to/aur-ferramp-clone commit -a -m "v0.1.0" && git -C /path/to/aur-ferramp-clone push
 ```
 
-Replace the `SKIP` checksums with the real `sha256sum` of the `v<version>`
-source tarball (for `ferramp`) or the per-architecture release tarballs
-(for `ferramp-bin`) before pushing:
+For each release, update `pkgver` in both `PKGBUILD` files, then refresh
+the checksums of the `v<version>` source tarball (for `ferramp`) and the
+per-architecture release tarballs (for `ferramp-bin`, also listed in the
+release's SHA256SUMS.txt) before pushing:
 
 ```sh
 makepkg -g   # prints sha256sums to paste into PKGBUILD
 makepkg --printsrcinfo > .SRCINFO
 ```
-
-Remember to update `pkgver` in both `PKGBUILD` files when tagging a release.

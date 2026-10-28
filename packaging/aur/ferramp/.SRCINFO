@@ -5,12 +5,14 @@ pkgbase = ferramp
 	url = https://github.com/SpankulatorX/ferramp
 	arch = x86_64
 	arch = aarch64
-	license = MIT
-	license = Apache-2.0
+	license = MIT OR Apache-2.0
 	makedepends = cargo
 	depends = alsa-lib
+	depends = gcc-libs
+	depends = glibc
 	depends = hicolor-icon-theme
+	options = !lto
 	source = ferramp-0.1.0.tar.gz::https://github.com/SpankulatorX/ferramp/archive/refs/tags/v0.1.0.tar.gz
-	sha256sums = SKIP
+	sha256sums = cf5bd8db586127f179ace9d100597da95093bccdd9ed5d2494d2f2df4319cbc9
 
 pkgname = ferramp
