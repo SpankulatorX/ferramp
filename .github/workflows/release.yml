@@ -12,7 +12,35 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # The classic plug-in host is a Windows program on every platform (Linux
+  # and macOS run it under Wine); build it once and test it natively here.
+  plughost:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-pc-windows-msvc
+      - name: Build the plug-in host (32- and 64-bit, static C runtime)
+        shell: pwsh
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: |
+          cargo build --release --locked -p ferramp-plughost --target i686-pc-windows-msvc
+          cargo build --release --locked -p ferramp-plughost --target x86_64-pc-windows-msvc
+          cargo build --release --locked -p ferramp-testplugins --target i686-pc-windows-msvc
+          New-Item -ItemType Directory -Path plughost | Out-Null
+          Copy-Item target/i686-pc-windows-msvc/release/ferramp-plughost.exe plughost/ferramp-plughost-x86.exe
+          Copy-Item target/x86_64-pc-windows-msvc/release/ferramp-plughost.exe plughost/ferramp-plughost-x64.exe
+      - name: Test every plug-in kind against the host
+        run: cargo test --release --locked -- --ignored plugins::tests::all_plugin_kinds
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plughost
+          path: plughost/*.exe
+
   linux:
+    needs: plughost
     strategy:
       fail-fast: false
       matrix:
@@ -26,6 +54,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libxkbcommon-dev rpm
+      - uses: actions/download-artifact@v4
+        with:
+          name: plughost
+          path: target/plughost
       - run: cargo build --release --locked
       - run: cargo test --release --locked
       - name: Install appimagetool
@@ -60,7 +92,7 @@ jobs:
           name=ferramp-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}
           mkdir -p "dist/$name/icons"
           cp target/release/ferramp packaging/linux/install.sh assets/ferramp.desktop \
-             README.md LICENSE-MIT LICENSE-APACHE NOTICE "dist/$name/"
+             README.md LICENSE-MIT LICENSE-APACHE NOTICE target/plughost/*.exe "dist/$name/"
           cp assets/icons/ferramp-*.png "dist/$name/icons/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           bash packaging/linux/build-deb.sh target/release/ferramp dist
@@ -77,10 +109,15 @@ jobs:
             dist/*.AppImage
 
   windows:
+    needs: plughost
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
+        with:
+          name: plughost
+          path: target/plughost
       - run: cargo build --release --locked
       - run: cargo test --release --locked
       - name: Package
@@ -89,6 +126,7 @@ jobs:
           $name = "ferramp-$env:GITHUB_REF_NAME-windows-x86_64"
           New-Item -ItemType Directory -Path "dist/$name" | Out-Null
           Copy-Item target/release/ferramp.exe, README.md, LICENSE-MIT, LICENSE-APACHE, NOTICE "dist/$name/"
+          Copy-Item target/plughost/*.exe "dist/$name/"
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
       - uses: actions/upload-artifact@v4
         with:
@@ -96,6 +134,7 @@ jobs:
           path: dist/*.zip
 
   macos:
+    needs: plughost
     runs-on: macos-latest
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
@@ -104,6 +143,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: actions/download-artifact@v4
+        with:
+          name: plughost
+          path: target/plughost
       - run: cargo build --release --locked --target aarch64-apple-darwin
       - run: cargo build --release --locked --target x86_64-apple-darwin
       - run: cargo test --release --locked
@@ -123,6 +166,8 @@ jobs:
           cp assets/icons/ferramp-256.png ferramp.iconset/icon_128x128@2x.png
           cp assets/icons/ferramp-256.png ferramp.iconset/icon_256x256.png
           iconutil -c icns ferramp.iconset -o "$app/Contents/Resources/ferramp.icns"
+          # The plug-in host, run under Wine when plug-ins are used.
+          cp target/plughost/*.exe "$app/Contents/Resources/"
           codesign --force --deep --sign - "$app"
           cp README.md LICENSE-MIT LICENSE-APACHE NOTICE dist/Ferramp/
           ln -s /Applications dist/Ferramp/Applications
@@ -136,7 +181,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [linux, windows, macos]
+    needs: [plughost, linux, windows, macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

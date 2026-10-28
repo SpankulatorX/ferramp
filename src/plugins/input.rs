@@ -30,8 +30,27 @@ pub struct PluginTrack {
 }
 
 impl PluginTrack {
+    /// Opens `path` with the first input plugin that can play it.
     pub fn open(sys: &Arc<Plugins>, path: &Path) -> Result<PluginTrack, String> {
-        let plugin = sys.input_for(path).ok_or("no input plugin for this file")?;
+        let candidates = sys.inputs_for(path);
+        if candidates.is_empty() {
+            return Err("no input plugin for this file".into());
+        }
+        let mut last = String::new();
+        for p in candidates {
+            match PluginTrack::open_with(sys, &p, path) {
+                Ok(t) => return Ok(t),
+                Err(e) => last = format!("{}: {e}", p.info.description),
+            }
+        }
+        Err(last)
+    }
+
+    fn open_with(
+        sys: &Arc<Plugins>,
+        plugin: &super::Plugin,
+        path: &Path,
+    ) -> Result<PluginTrack, String> {
         let host = sys
             .host(plugin.arch)
             .ok_or("the plugin host is not running")?;
@@ -54,6 +73,11 @@ impl PluginTrack {
             match rx.recv_timeout(left) {
                 Ok(FromHost::Opened { format, .. }) => break format,
                 Ok(FromHost::StreamFailed { msg, .. }) => return Err(fail(msg)),
+                // The plugin gave up before producing anything.
+                Ok(FromHost::Eof { .. }) => {
+                    let _ = host.send(&ToHost::Close { stream });
+                    return Err(fail("the plugin could not play it".into()));
+                }
                 Ok(_) => {}
                 Err(_) => {
                     let _ = host.send(&ToHost::Close { stream });

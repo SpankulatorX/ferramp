@@ -10,6 +10,9 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 bin=${1:-"$root/target/release/ferramp"}
 outdir=${2:-"$root/dist"}
+# The plug-in host: ferramp-plughost-*.exe in $PLUGHOST_DIR (default
+# target/plughost), installed when present.
+plughost=${PLUGHOST_DIR:-"$root/target/plughost"}
 
 if [ ! -x "$bin" ]; then
     echo "error: binary not found or not executable: $bin" >&2
@@ -35,6 +38,9 @@ appdir="$workdir/Ferramp.AppDir"
 mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications" "$appdir/usr/share/doc/ferramp"
 
 install -m755 "$bin" "$appdir/usr/bin/ferramp"
+for f in "$plughost"/ferramp-plughost-*.exe; do
+    if [ -f "$f" ]; then install -Dm644 "$f" "$appdir/usr/lib/ferramp/$(basename "$f")"; fi
+done
 install -m644 "$root/assets/ferramp.desktop" "$appdir/usr/share/applications/ferramp.desktop"
 install -m644 "$root/assets/ferramp.desktop" "$appdir/ferramp.desktop"
 install -m644 "$root/assets/icons/ferramp-256.png" "$appdir/ferramp.png"

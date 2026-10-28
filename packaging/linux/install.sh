@@ -5,6 +5,10 @@ here=$(cd "$(dirname "$0")" && pwd)
 prefix=${PREFIX:-"$HOME/.local"}
 
 install -Dm755 "$here/ferramp" "$prefix/bin/ferramp"
+# The plug-in host (a Windows program Ferramp runs under Wine).
+for f in "$here"/ferramp-plughost-*.exe; do
+    if [ -f "$f" ]; then install -Dm644 "$f" "$prefix/lib/ferramp/$(basename "$f")"; fi
+done
 # Absolute Exec path: desktop menus often run without ~/.local/bin on PATH.
 mkdir -p "$prefix/share/applications"
 sed "s|^Exec=ferramp |Exec=\"$prefix/bin/ferramp\" |" "$here/ferramp.desktop" \

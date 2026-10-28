@@ -25,3 +25,41 @@ jobs:
           path: |
             target/release/ferramp
             target/release/ferramp.exe
+
+  # Every plug-in kind, end to end, against the real host process.
+  plugins-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-pc-windows-msvc
+      - run: cargo build --release -p ferramp-plughost -p ferramp-testplugins --target i686-pc-windows-msvc
+      - run: cargo test --release -- --ignored plugins::tests::all_plugin_kinds
+
+  plugins-wine:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-pc-windows-gnu
+      - name: Linux, Wine and display dependencies
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libxkbcommon-dev wine wine32:i386 xvfb
+      - name: Zig as the Windows cross linker (pinned, checksummed)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/zig.tar.xz" https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz
+          echo "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026  $RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/zig-x86_64-linux-0.17.0" >> "$GITHUB_PATH"
+          cargo install --locked cargo-zigbuild --version 0.24.0
+      - run: cargo zigbuild --release -p ferramp-plughost -p ferramp-testplugins --target i686-pc-windows-gnu
+      - name: Test every plug-in kind under Wine
+        env:
+          WINEDEBUG: -all
+        run: |
+          wineboot --init || true
+          xvfb-run -a cargo test --release -- --ignored plugins::tests::all_plugin_kinds

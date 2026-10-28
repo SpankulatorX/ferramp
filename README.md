@@ -32,6 +32,9 @@ pixel for pixel.
   audio (Symphonia), internet radio over HTTP(S) with stream titles.
 - Classic skins: `.wsz`/`.zip` or folders, `viscolor.txt`,
   `pledit.txt`, `region.txt` (shaped windows) and skin cursors.
+- Classic plug-ins: input, output, DSP, visualization and general
+  purpose DLLs, on Windows natively and on Linux and macOS through Wine
+  (see Plug-ins below).
 - The classic menus, keyboard shortcuts and tooltips.
 
 ## Download
@@ -96,6 +99,43 @@ to download it from the Internet Archive
 skin, and checks the download against a fixed SHA-256 before using it. The
 same offer is under *Skins > Classic Look*.
 
+## Plug-ins
+
+Ferramp loads classic Winamp 2 and 5 plug-ins: input (`in_*.dll`, for
+formats such as Opus, tracker modules, SID, VGM and game audio), output
+(`out_*.dll`), DSP and effects (`dsp_*.dll`), visualization
+(`vis_*.dll`) and general purpose (`gen_*.dll`).
+
+- Put the DLL files in the `Plugins` folder inside the configuration
+  folder (`~/.config/ferramp/Plugins` on Linux, `%APPDATA%\ferramp\Plugins`
+  on Windows, `~/Library/Application Support/ferramp/Plugins` on macOS).
+  Libraries a plug-in needs go one folder up, where the original
+  player's program file would be.
+- *Options > Plug-ins* (Ctrl+K) lists them. Configure and About open the
+  plug-in's own windows; Start / Stop switches the active DSP,
+  visualization or output plug-in; Enable / Disable decides whether it
+  loads at all. Ctrl+Shift+K starts and stops the chosen visualization.
+- Input plug-ins play the formats Ferramp has no decoder for, and act as
+  a fallback when the built-in decoder cannot read a file. They also
+  supply titles and durations for the playlist.
+- General purpose plug-ins see the player state and playlist and can
+  control playback, as they did in the original player.
+- Plug-ins run in a separate program, `ferramp-plughost`, which ships
+  with Ferramp. It is a Windows program: Windows runs it directly, Linux
+  and macOS run it under Wine (`apt install wine`, `dnf install wine`,
+  `pacman -S wine`, or `brew install --cask wine-stable`). A plug-in that
+  crashes or hangs only takes the helper down; Ferramp restarts it, and
+  a plug-in that hangs while loading is left out and marked in the list.
+  A plug-in that shows a dialog while loading is given time for you to
+  answer it.
+
+Tested so far: files played through `in_opus`, `in_openmpt`, `in_vgm`
+and `in_sidplay2`; `dsp_bs2b` and `dsp_qat` started and configured;
+`in_vgmstream`, `in_msx`, `in_mad`, `out_wave_gpl`, `out_yasapi-nt`,
+`vis_geis` and `gen_discord_rpc` loaded. Every plug-in kind is also
+tested end to end against Ferramp's own test plug-ins, on Windows and
+under Wine.
+
 ## Keyboard
 
 | Key | Action |
@@ -122,14 +162,17 @@ configuration folder (`FERRAMP_CONFIG_DIR` overrides it).
 
 ## Limitations
 
-- Opus, WavPack, tracker modules and MIDI cannot be played (Symphonia has
-  no decoder for them).
+- Without plug-ins, Opus, WavPack, tracker modules and MIDI cannot be
+  played (Symphonia has no decoder for them).
+- Plug-ins that depend on the later player's internal service layer
+  (Wasabi), such as the media library and some plug-ins bundled with the
+  original player, do not start.
 - The equalizer graph follows the original curve closely but not to the
   last pixel.
 - Native Wayland mode cannot dock or snap windows, since Wayland does not
   let applications position their own windows.
-- The media library, minibrowser, video window and input/output plug-ins
-  are not part of this recreation.
+- The media library, minibrowser and video window are not part of this
+  recreation.
 
 ## Licence
 

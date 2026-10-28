@@ -8,6 +8,9 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 bin=${1:-"$root/target/release/ferramp"}
 outdir=${2:-"$root/dist"}
+# The plug-in host: ferramp-plughost-*.exe in $PLUGHOST_DIR (default
+# target/plughost), installed when present.
+plughost=${PLUGHOST_DIR:-"$root/target/plughost"}
 
 if [ ! -x "$bin" ]; then
     echo "error: binary not found or not executable: $bin" >&2
@@ -36,6 +39,10 @@ cp "$root/assets/ferramp.desktop" "$topdir/SOURCES/ferramp.desktop"
 mkdir -p "$topdir/SOURCES/icons"
 cp "$root"/assets/icons/ferramp-*.png "$topdir/SOURCES/icons/"
 cp "$root/README.md" "$root/LICENSE-MIT" "$root/LICENSE-APACHE" "$root/NOTICE" "$topdir/SOURCES/"
+mkdir -p "$topdir/SOURCES/plughost"
+for f in "$plughost"/ferramp-plughost-*.exe; do
+    if [ -f "$f" ]; then cp "$f" "$topdir/SOURCES/plughost/"; fi
+done
 sed "s/@VERSION@/$version/g" "$root/packaging/linux/ferramp.spec" > "$topdir/SPECS/ferramp.spec"
 
 rpmbuild --define "_topdir $topdir" -bb "$topdir/SPECS/ferramp.spec"

@@ -123,6 +123,19 @@ pub fn find_wine() -> Option<PathBuf> {
     None
 }
 
+/// Copies the host into `dir` unless an identical copy is there already.
+fn place_copy(exe: &Path, dir: &Path, arch: Arch) -> Option<PathBuf> {
+    let target = dir.join(arch.exe_name());
+    let src = std::fs::read(exe).ok()?;
+    if std::fs::read(&target).ok().as_deref() != Some(&src[..]) {
+        std::fs::create_dir_all(dir).ok()?;
+        let part = dir.join(format!("{}.part", arch.exe_name()));
+        std::fs::write(&part, &src).ok()?;
+        std::fs::rename(&part, &target).ok()?;
+    }
+    Some(target)
+}
+
 type Pending = Arc<Mutex<HashMap<u32, Sender<FromHost>>>>;
 
 pub struct Host {
@@ -154,17 +167,28 @@ impl std::fmt::Display for HostError {
 
 impl Host {
     /// Starts the host; `events` receives every message with id 0.
+    ///
+    /// With `run_dir`, the host runs from a copy placed there, with that
+    /// folder as its working directory: plugins find "the player's folder"
+    /// from the program's own path and expect their `Plugins` folder (and
+    /// the libraries next to it) there.
     pub fn spawn(
         arch: Arch,
         log: Option<&Path>,
+        run_dir: Option<&Path>,
         events: Sender<FromHost>,
     ) -> Result<Host, HostError> {
-        let exe = find_host(arch).ok_or_else(|| {
+        let mut exe = find_host(arch).ok_or_else(|| {
             HostError::NotFound(format!(
                 "the plugin host ({}) is not installed",
                 arch.exe_name()
             ))
         })?;
+        if let Some(dir) = run_dir
+            && let Some(copy) = place_copy(&exe, dir, arch)
+        {
+            exe = copy;
+        }
         let mut cmd = if cfg!(windows) {
             Command::new(&exe)
         } else {

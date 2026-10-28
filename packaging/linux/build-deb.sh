@@ -8,6 +8,9 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 bin=${1:-"$root/target/release/ferramp"}
 outdir=${2:-"$root/dist"}
+# The plug-in host: ferramp-plughost-*.exe in $PLUGHOST_DIR (default
+# target/plughost), installed when present.
+plughost=${PLUGHOST_DIR:-"$root/target/plughost"}
 
 if [ ! -x "$bin" ]; then
     echo "error: binary not found or not executable: $bin" >&2
@@ -36,6 +39,9 @@ for size in 16 32 48 64 128 256; do
 done
 
 install -m755 "$bin" "$pkgdir/usr/bin/ferramp"
+for f in "$plughost"/ferramp-plughost-*.exe; do
+    if [ -f "$f" ]; then install -Dm644 "$f" "$pkgdir/usr/lib/ferramp/$(basename "$f")"; fi
+done
 install -m644 "$root/assets/ferramp.desktop" "$pkgdir/usr/share/applications/ferramp.desktop"
 for size in 16 32 48 64 128 256; do
     install -m644 "$root/assets/icons/ferramp-$size.png" \
@@ -68,6 +74,7 @@ Maintainer: Jonas Millard <126339103+SpankulatorX@users.noreply.github.com>
 Installed-Size: $installed_size
 Homepage: https://github.com/SpankulatorX/ferramp
 Depends: libasound2 | libasound2t64, libc6 (>= 2.35)
+Recommends: wine
 Description: Classic skinnable audio player
  Ferramp is a cross-platform audio player in Rust that recreates the
  look and feel of the classic Winamp 2 player: main window, graphical

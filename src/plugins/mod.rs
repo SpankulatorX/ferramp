@@ -310,7 +310,13 @@ impl Plugins {
             )
             .to_lowercase(),
         );
-        let host = Arc::new(Host::spawn(arch, Some(&log), tx)?);
+        // The player's folder, as plugins see it: the one above Plugins.
+        let run_dir = self
+            .dirs
+            .first()
+            .and_then(|d| d.parent())
+            .map(Path::to_path_buf);
+        let host = Arc::new(Host::spawn(arch, Some(&log), run_dir.as_deref(), tx)?);
         let hub = self.hub.clone();
         std::thread::Builder::new()
             .name("plughost-events".into())
@@ -425,12 +431,25 @@ impl Plugins {
         }
     }
 
-    /// The input plugin for `path`: the one claiming its extension.
+    /// The input plugin for `path`: the first one claiming its extension.
     pub fn input_for(&self, path: &Path) -> Option<Plugin> {
-        let ext = path.extension()?.to_str()?.to_lowercase();
+        self.inputs_for(path).into_iter().next()
+    }
+
+    /// Every input plugin claiming the extension of `path`, in list order;
+    /// when one cannot open a file the next one gets a try.
+    pub fn inputs_for(&self, path: &Path) -> Vec<Plugin> {
+        let Some(ext) = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_lowercase)
+        else {
+            return Vec::new();
+        };
         self.of_kind(Kind::Input)
             .into_iter()
-            .find(|p| p.extensions().any(|e| e == ext))
+            .filter(|p| p.extensions().any(|e| e == ext))
+            .collect()
     }
 
     /// Whether a plugin, rather than the built-in decoder, should open
@@ -774,7 +793,12 @@ fn dispatch(ev: FromHost, hub: &Hub) {
             (hub.wake)();
         }
         FromHost::Log(s) => {
-            if let Some(f) = s.strip_prefix("loading ") {
+            if let Some(f) = s
+                .strip_prefix("loading ")
+                .or_else(|| s.strip_prefix("waiting "))
+            {
+                // "waiting": a plugin shows a dialog and the host still
+                // answers messages; give the user time.
                 *hub.progress.lock().unwrap() = (Instant::now(), Some(f.to_string()));
             } else if s.starts_with("loaded ") {
                 *hub.progress.lock().unwrap() = (Instant::now(), None);

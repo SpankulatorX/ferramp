@@ -10,6 +10,11 @@ URL:            https://github.com/SpankulatorX/ferramp
 # alike although they name the ALSA package differently.
 
 BuildArch:      %{_target_cpu}
+# Windows plug-ins run under Wine.
+Recommends:     wine
+# The plug-in host is a Windows program: nothing to strip or scan.
+%global __strip /bin/true
+%global __brp_strip /bin/true
 %global debug_package %{nil}
 
 %description
@@ -29,6 +34,10 @@ done
 for f in README.md NOTICE; do
     install -Dm644 %{_sourcedir}/$f %{buildroot}%{_docdir}/%{name}/$f
 done
+mkdir -p %{buildroot}%{_prefix}/lib/ferramp
+for f in %{_sourcedir}/plughost/*.exe; do
+    if [ -f "$f" ]; then install -Dm644 "$f" %{buildroot}%{_prefix}/lib/ferramp/; fi
+done
 for f in LICENSE-MIT LICENSE-APACHE; do
     install -Dm644 %{_sourcedir}/$f %{buildroot}%{_datadir}/licenses/%{name}/$f
 done
@@ -37,6 +46,7 @@ done
 %{_bindir}/ferramp
 %{_datadir}/applications/ferramp.desktop
 %{_datadir}/icons/hicolor/*/apps/ferramp.png
+%{_prefix}/lib/ferramp
 %{_docdir}/%{name}
 %{_datadir}/licenses/%{name}
 

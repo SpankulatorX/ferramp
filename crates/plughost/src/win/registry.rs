@@ -65,6 +65,9 @@ static REG: Mutex<Registry> = Mutex::new(Registry {
     inputs_only: false,
 });
 
+/// The plugin being loaded right now, for the responsiveness check.
+static LOADING: Mutex<Option<String>> = Mutex::new(None);
+
 pub fn set_dirs(ini_dir: &str, dirs: &[String], skip: Vec<String>, inputs_only: bool) {
     let mut r = REG.lock().unwrap();
     r.inputs_only = inputs_only;
@@ -156,6 +159,31 @@ pub fn scan() -> Vec<PluginInfo> {
             }
         }
     }
+    // While a plugin loads, tell Ferramp whether the main thread still
+    // answers messages: a plugin showing a dialog (a first-run notice, a
+    // missing-file warning) is waiting for the user, not hung.
+    let loading_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let done = loading_done.clone();
+    let hwnd = super::Ptr(main_hwnd());
+    std::thread::spawn(move || {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_NULL,
+        };
+        let hwnd = hwnd;
+        while !done.load(std::sync::atomic::Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let current = LOADING.lock().unwrap().clone();
+            if let Some(name) = current {
+                let mut r = 0usize;
+                let ok = unsafe {
+                    SendMessageTimeoutW(hwnd.0, WM_NULL, 0, 0, SMTO_ABORTIFHUNG, 1500, &mut r)
+                };
+                if ok != 0 {
+                    log(format!("waiting {name}"));
+                }
+            }
+        }
+    });
     let order: &[Kind] = if inputs_only {
         &[Kind::Input]
     } else {
@@ -186,11 +214,14 @@ pub fn scan() -> Vec<PluginInfo> {
                 continue;
             }
             log(format!("loading {name}"));
+            *LOADING.lock().unwrap() = Some(name.clone());
             let plugin = unsafe { load(id, *k, name, path) };
+            *LOADING.lock().unwrap() = None;
             log(format!("loaded {name}"));
             REG.lock().unwrap().plugins.push(plugin);
         }
     }
+    loading_done.store(true, std::sync::atomic::Ordering::SeqCst);
     let mut r = REG.lock().unwrap();
     r.scanned = true;
     r.plugins.iter().map(|p| p.info.clone()).collect()
