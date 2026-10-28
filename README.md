@@ -13,6 +13,11 @@ pixel for pixel.
 
 ![Ferramp with its built-in skin: main window, equalizer and playlist editor](docs/screenshot.png)
 
+A 90-second tour: playback, the equalizer, skins, the Skin Museum and
+classic plug-ins, recorded straight from the app.
+
+https://github.com/user-attachments/assets/5c2dde87-203a-4e72-954d-ee841e5f800a
+
 ## What it does
 
 - Main window with time display, scrolling song title, bitrate and
